@@ -1,0 +1,28 @@
+{
+  "sources": [
+    {
+      "name": "Thorsten-Voice",
+      "license": "CC0-1.0",
+      "licenseUrl": "https://creativecommons.org/publicdomain/zero/1.0/",
+      "sourceUrl": "https://github.com/thorstenMueller/Thorsten-Voice"
+    },
+    {
+      "name": "Kyutai / Voice-Zero",
+      "license": "CC0-1.0",
+      "licenseUrl": "https://creativecommons.org/publicdomain/zero/1.0/",
+      "sourceUrl": "https://huggingface.co/kyutai/tts-voices"
+    },
+    {
+      "name": "Kyutai / Alba MacKenna",
+      "license": "CC-BY-4.0",
+      "licenseUrl": "https://creativecommons.org/licenses/by/4.0/",
+      "sourceUrl": "https://huggingface.co/kyutai/tts-voices"
+    },
+    {
+      "name": "Kyutai / CML-TTS",
+      "license": "CC-BY-4.0",
+      "licenseUrl": "https://creativecommons.org/licenses/by/4.0/",
+      "sourceUrl": "https://huggingface.co/kyutai/tts-voices"
+    }
+  ]
+}

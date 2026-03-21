@@ -1,0 +1,19 @@
+*.pyc
+__pycache__/
+dist/
+.sconsign.dblite
+.pytest_cache/
+.agents/
+.helper-venv/
+*.nvda-addon
+
+# Standalone runtime assets can be bootstrapped locally when needed.
+addon/synthDrivers/maxlogic_xtts_v2/deps/*
+addon/synthDrivers/maxlogic_xtts_v2/model/*
+addon/synthDrivers/maxlogic_xtts_v2/voices/*
+addon/synthDrivers/maxlogic_xtts_v2/community_mirror/voices/*
+
+!addon/synthDrivers/maxlogic_xtts_v2/deps/.gitkeep
+!addon/synthDrivers/maxlogic_xtts_v2/model/README.md
+!addon/synthDrivers/maxlogic_xtts_v2/voices/README.md
+!addon/synthDrivers/maxlogic_xtts_v2/community_mirror/README.md
