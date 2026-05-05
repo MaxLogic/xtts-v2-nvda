@@ -1811,7 +1811,7 @@ class ExtractSamplePanel(wx.Panel):
 		self._fallback_started_at = None
 		self._fallback_playing = True
 		self._playback_stop_at_ms = stop_at_ms
-		self.play_pause_button.SetLabel(_("Stop"))
+		self.play_pause_button.SetLabel(_("Pause"))
 		self._start_timer()
 
 		def _on_started():
@@ -1986,7 +1986,7 @@ class ExtractSamplePanel(wx.Panel):
 				self.play_pause_button.SetLabel(_("Play"))
 				self._stop_timer()
 			else:
-				self._stop_playback(reset_stop_at=True)
+				self._stop_playback(reset_stop_at=False)
 			return
 		self._start_playback(start_ms=None, stop_at_ms=None)
 
