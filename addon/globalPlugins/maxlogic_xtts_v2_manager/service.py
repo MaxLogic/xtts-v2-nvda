@@ -440,6 +440,7 @@ def _run_audio_tool(arguments):
 		encoding="utf-8",
 		errors="replace",
 		env=dict(os.environ, COQUI_TOS_AGREED="1"),
+		creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
 	)
 	stdout = (result.stdout or "").strip()
 	stderr = (result.stderr or "").strip()
@@ -582,30 +583,34 @@ def _play_source_wav_stream(source_path, start_ms, end_ms, generation, on_playba
 		end_frame = max(start_frame, min(total_frames, int(round((float(end_ms) / 1000.0) * sample_rate))))
 		if end_frame <= start_frame:
 			return "completed"
-		chunk_frames = max(1, int(sample_rate / 5))
+		chunk_frames = max(1, int(sample_rate / 2))
+		buffer_chunks = 6
 		handle.setpos(start_frame)
 		started = False
 		while handle.tell() < end_frame:
-			with _preview_lock:
-				if generation != _preview_generation:
-					return "superseded"
-				player = _get_preview_player(
-					sample_rate,
-					channels=channels,
-					bits_per_sample=sample_width * 8,
-				)
-			frames_to_read = min(chunk_frames, end_frame - handle.tell())
-			audio_bytes = handle.readframes(frames_to_read)
-			if not audio_bytes:
-				break
-			with _preview_lock:
-				if generation != _preview_generation:
-					return "superseded"
-				player.feed(audio_bytes)
-			if not started:
-				started = True
-				if on_playback_started is not None:
-					wx.CallAfter(on_playback_started)
+			for __ in range(buffer_chunks):
+				with _preview_lock:
+					if generation != _preview_generation:
+						return "superseded"
+					player = _get_preview_player(
+						sample_rate,
+						channels=channels,
+						bits_per_sample=sample_width * 8,
+					)
+				if handle.tell() >= end_frame:
+					break
+				frames_to_read = min(chunk_frames, end_frame - handle.tell())
+				audio_bytes = handle.readframes(frames_to_read)
+				if not audio_bytes:
+					break
+				with _preview_lock:
+					if generation != _preview_generation:
+						return "superseded"
+					player.feed(audio_bytes)
+				if not started:
+					started = True
+					if on_playback_started is not None:
+						wx.CallAfter(on_playback_started)
 			player.idle()
 		with _preview_lock:
 			if generation != _preview_generation:
