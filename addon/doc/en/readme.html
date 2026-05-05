@@ -12,15 +12,20 @@
 <ul>
 <li>Separate NVDA synth: <code>MaxLogic XTTS v2</code></li>
 <li>One-click runtime setup from the voice manager</li>
-<li>Voice manager with Installed, Official, Community, and Speech Cache tabs</li>
+<li>Voice manager with Installed, Hugging Face, Official, Community, Extract Sample, and Speech Cache tabs</li>
 <li>Five bundled CC0 starter voices</li>
 <li>Curated on-demand voice downloads from legal upstream sources</li>
-<li>Local XTTS profile install from reference audio or zip bundles</li>
+<li>Live Hugging Face search for XTTS-compatible repos with playable sample audio</li>
+<li>Local XTTS profile install from reference audio, XTTS conditioning files, or zip bundles</li>
+<li>Direct <code>.pth</code> install validates compatibility before accepting the file</li>
+<li>Extract a short XTTS-ready sample from a longer recording with start/end markers</li>
 <li>Speech cache for repeated short utterances</li>
 </ul>
 <p>User profiles are stored in <code>%APPDATA%\nvda\maxlogicXTTSv2\voices</code>.</p>
 <p>Install the add-on normally. The installer bootstraps the helper runtime automatically. If the helper runtime is missing or needs repair, open <code>NVDA menu -&gt; MaxLogic XTTS v2 voice manager...</code> and use <code>Set up XTTS runtime</code>. The setup step installs the latest released Coqui TTS package from PyPI.</p>
 <p>Bundled starter voices: <code>Gosia</code>, <code>Darkman</code>, <code>Kathleen</code>, <code>Joe</code>, and <code>Kerstin</code>.</p>
 <p>The Official tab uses curated CC0 OHF Voice samples. The Community tab adds curated voices from Thorsten-Voice and Kyutai.</p>
+<p>The Hugging Face tab searches live XTTS-related repos that expose playable sample audio, lets you preview those samples, and installs from the sample audio rather than trusting arbitrary checkpoint files.</p>
+<p>Direct local <code>.pth</code> install is supported, but only when the helper can load the file as a valid XTTS voice-conditioning file. Invalid or unrelated PyTorch checkpoints are rejected.</p>
 </body>
 </html>

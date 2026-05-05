@@ -9,11 +9,14 @@ It is based on the `kokoro-tts-nvda` project structure, but the speech runtime i
 - Separate NVDA synth: `MaxLogic XTTS v2`
 - One-click runtime setup from the voice manager
 - Built-in voice manager available from the NVDA menu
-- Installed, Official, Community, and Speech Cache tabs
+- Installed, Hugging Face, Official, Community, Extract Sample, and Speech Cache tabs
 - Five bundled CC0 starter voices
 - Curated on-demand voice downloads from legal upstream sources
-- Local profile install from `.wav`, `.mp3`, `.flac`, `.ogg`, `.m4a`, `.aac`, or `.zip`
+- Live Hugging Face search for XTTS-compatible repos with playable sample audio
+- Local profile install from `.wav`, `.mp3`, `.flac`, `.ogg`, `.m4a`, `.aac`, `.pth`, or `.zip`
+- Direct `.pth` install validates that the file is a compatible XTTS voice-conditioning file before accepting it
 - Sample playback before installing a catalog profile
+- Extract a short XTTS-ready sample from a longer recording with start/end markers
 - User-managed voice profiles stored outside the add-on so they survive reinstalls
 - Persistent short-speech cache and short-lived paragraph hot cache
 - Safer text chunking for long passages
@@ -33,7 +36,7 @@ By default the helper uses the Coqui model name `tts_models/multilingual/multi-d
 
 ## Voice profiles
 
-XTTS v2 clones from reference audio. In this add-on, a "voice" is a profile that contains one or more reference audio files plus profile metadata.
+XTTS v2 clones from reference audio. In this add-on, a "voice" is a profile that contains one or more reference audio files, or an XTTS conditioning `.pth`, plus profile metadata.
 
 The add-on bundles these small CC0 starter voices:
 
@@ -62,9 +65,24 @@ Open:
 Tabs:
 
 - `Installed`: user-installed and packaged voice profiles
+- `Hugging Face`: live search for XTTS-compatible repos with sample preview and one-click install from sample audio
 - `Official`: curated downloadable voice profiles from legal upstream sources
 - `Community`: curated community profile catalog entries from Thorsten-Voice and Kyutai
+- `Extract Sample`: load a long recording, set markers, preview the selection, and save it as an XTTS profile
 - `Speech Cache`: cache settings, stats, clear, and compact actions
+
+Hugging Face search:
+
+- Searches live Hugging Face model repos for XTTS-related entries that include playable sample audio
+- Uses the sample audio as the install source, then lets XTTS build its own conditioning cache locally
+- Keeps repo and license metadata in the installed profile metadata when available
+- Filters out results that do not expose a usable sample file for preview/install
+
+Direct local install:
+
+- Audio files such as `.wav` and `.mp3` install as reference-audio profiles
+- `.pth` files install only if the helper can load them as a valid XTTS voice-conditioning file
+- Invalid, corrupted, or unrelated PyTorch `.pth` files are rejected before installation
 
 ## Supported languages
 
