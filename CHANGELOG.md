@@ -8,3 +8,4 @@
 - added Hugging Face search with live XTTS sample preview and install from sample audio
 - added direct `.pth` install support with compatibility validation
 - added sample extraction from long recordings inside the voice manager
+- added safe Extract Sample editing with temporary working copies, snippet deletion, and direct streaming playback for large WAV sources

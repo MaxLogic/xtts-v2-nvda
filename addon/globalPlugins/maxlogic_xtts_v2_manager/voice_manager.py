@@ -769,6 +769,9 @@ class CatalogVoicesPanel(wx.Panel):
 		self._update_preview_button_state()
 		self._update_preview_lock_state()
 
+	def _update_detail_hint(self):
+		return
+
 	def on_toggle_entry(self, event):
 		index = event.GetInt()
 		if index == wx.NOT_FOUND or index >= len(self._visible_entries):
@@ -1441,11 +1444,14 @@ class ExtractSamplePanel(wx.Panel):
 	_AUDIO_WILDCARD = (
 		_("Audio files (*.wav;*.mp3;*.flac;*.ogg;*.m4a;*.aac)|*.wav;*.mp3;*.flac;*.ogg;*.m4a;*.aac")
 	)
+	_FALLBACK_PLAY_WINDOW_MS = 30000
 
 	def __init__(self, parent, on_change):
 		super(ExtractSamplePanel, self).__init__(parent)
 		self._on_change = on_change
 		self._source_path = None
+		self._source_display_path = None
+		self._working_copy = None
 		self._source_info = None
 		self._transport_ready = False
 		self._playback_stop_at_ms = None
@@ -1541,6 +1547,8 @@ class ExtractSamplePanel(wx.Panel):
 		selection_row.Add(self.selection_length_ctrl, 0, wx.ALL, 5)
 		self.preview_selection_button = wx.Button(self, label=_("Preview selection"))
 		selection_row.Add(self.preview_selection_button, 0, wx.ALL, 5)
+		self.delete_snippet_button = wx.Button(self, label=_("Delete snippet"))
+		selection_row.Add(self.delete_snippet_button, 0, wx.ALL, 5)
 		marker_box.Add(selection_row, 0, wx.EXPAND)
 		main_sizer.Add(marker_box, 0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, 5)
 
@@ -1581,6 +1589,7 @@ class ExtractSamplePanel(wx.Panel):
 		self.Bind(wx.EVT_BUTTON, self.on_play_before_start, self.play_before_start_button)
 		self.Bind(wx.EVT_BUTTON, self.on_play_after_end, self.play_after_end_button)
 		self.Bind(wx.EVT_BUTTON, self.on_preview_selection, self.preview_selection_button)
+		self.Bind(wx.EVT_BUTTON, self.on_delete_snippet, self.delete_snippet_button)
 		self.Bind(wx.EVT_BUTTON, self.on_save_profile, self.save_button)
 		self.Bind(wx.EVT_TEXT, lambda evt: self._update_marker_summary(), self.start_marker_ctrl)
 		self.Bind(wx.EVT_TEXT, lambda evt: self._update_marker_summary(), self.end_marker_ctrl)
@@ -1604,6 +1613,7 @@ class ExtractSamplePanel(wx.Panel):
 			self.play_before_start_button,
 			self.play_after_end_button,
 			self.preview_selection_button,
+			self.delete_snippet_button,
 		):
 			control.Enable(enabled)
 		self.speed_choice.Enable(enabled and self._media_loaded)
@@ -1735,6 +1745,22 @@ class ExtractSamplePanel(wx.Panel):
 		self.play_pause_button.SetLabel(_("Play"))
 		self._stop_timer()
 
+	def _reset_media_control(self):
+		self._stop_playback(reset_stop_at=True)
+		if self._media is not None:
+			try:
+				self._media.Destroy()
+			except Exception:
+				pass
+		self._media = None
+		self._media_loaded = False
+		if wxmedia is not None:
+			try:
+				self._media = wxmedia.MediaCtrl(self)
+				self._media.Hide()
+			except Exception:
+				self._media = None
+
 	def _start_playback(self, start_ms=None, stop_at_ms=None):
 		if not self._transport_ready:
 			return
@@ -1761,9 +1787,19 @@ class ExtractSamplePanel(wx.Panel):
 		if self._source_path is None:
 			return
 		start_ms = self._current_position_ms() if start_ms is None else int(start_ms)
-		end_ms = self._current_duration_ms() if stop_at_ms is None else int(stop_at_ms)
+		duration_ms = self._current_duration_ms()
+		end_ms = duration_ms if stop_at_ms is None else int(stop_at_ms)
 		start_ms = max(0, min(start_ms, self._current_duration_ms()))
 		end_ms = max(0, min(end_ms, self._current_duration_ms()))
+		streamable_wav = os.path.splitext(self._source_path)[1].lower() == ".wav"
+		max_end_ms = duration_ms if streamable_wav else min(duration_ms, start_ms + self._FALLBACK_PLAY_WINDOW_MS)
+		if end_ms > max_end_ms:
+			end_ms = max_end_ms
+			self.status_label.SetLabel(
+				_("Fallback playback is limited to {duration} from the current position.").format(
+					duration=_format_timecode(self._FALLBACK_PLAY_WINDOW_MS),
+				)
+			)
 		if end_ms <= start_ms:
 			self._fallback_position_ms = start_ms
 			self.current_position_ctrl.SetValue(_format_timecode(start_ms))
@@ -1844,8 +1880,19 @@ class ExtractSamplePanel(wx.Panel):
 			self._apply_speed()
 		return loaded
 
-	def _finish_source_load(self, path, source_info=None, error_message=None):
-		self._source_path = path if error_message is None else None
+	def _cleanup_working_source(self):
+		self._stop_playback(reset_stop_at=True)
+		if self._working_copy is not None:
+			try:
+				service.delete_audio_working_copy(self._working_copy)
+			except Exception:
+				log.warning("MaxLogic XTTS v2 temporary source cleanup failed", exc_info=True)
+		self._working_copy = None
+
+	def _finish_source_load(self, display_path, working_copy=None, source_info=None, error_message=None):
+		self._working_copy = working_copy if error_message is None else None
+		self._source_display_path = display_path if error_message is None else None
+		self._source_path = working_copy.get("workingPath") if working_copy is not None and error_message is None else None
 		self._source_info = source_info
 		if error_message:
 			self.source_summary.SetLabel(_("Unable to read audio metadata right now."))
@@ -1857,10 +1904,10 @@ class ExtractSamplePanel(wx.Panel):
 				wx.OK | wx.ICON_ERROR,
 			)
 			return
-		self.source_path_ctrl.SetValue(path)
-		loaded_in_transport = self._load_media_source(path)
+		self.source_path_ctrl.SetValue(display_path)
+		loaded_in_transport = self._load_media_source(self._source_path)
 		self.source_summary.SetLabel(
-			_("{duration} | {sampleRate} Hz | {channels} channel(s) | {format}/{subtype}").format(
+			_("{duration} | {sampleRate} Hz | {channels} channel(s) | {format}/{subtype} | editing temporary copy").format(
 				duration=_format_timecode(source_info.get("durationMs") or 0),
 				sampleRate=source_info.get("sampleRate") or 0,
 				channels=source_info.get("channels") or 0,
@@ -1876,7 +1923,7 @@ class ExtractSamplePanel(wx.Panel):
 			default_end = int(source_info.get("durationMs") or 0)
 		self.end_marker_ctrl.SetValue(_format_timecode(default_end))
 		if not self.voice_name_ctrl.GetValue().strip():
-			base_name = os.path.splitext(os.path.basename(path))[0].replace("_", " ").strip()
+			base_name = os.path.splitext(os.path.basename(display_path))[0].replace("_", " ").strip()
 			self.voice_name_ctrl.SetValue(base_name)
 		self._set_transport_ready(True)
 		if loaded_in_transport:
@@ -1902,18 +1949,27 @@ class ExtractSamplePanel(wx.Panel):
 		path = dialog.GetPath().strip()
 		if not path:
 			return
+		self._cleanup_working_source()
+		self._source_path = None
+		self._source_display_path = None
+		self._source_info = None
+		self._set_transport_ready(False)
 		self._set_busy(True, _("Loading source audio..."))
 
 		def _worker():
+			working_copy = None
 			try:
-				source_info = service.probe_audio_source(path)
+				working_copy = service.create_audio_working_copy(path)
+				source_info = service.probe_audio_source(working_copy["workingPath"])
 			except Exception as error:
+				if working_copy is not None:
+					service.delete_audio_working_copy(working_copy)
 				log.exception("MaxLogic XTTS v2 source probe failed", exc_info=True)
 				wx.CallAfter(self._set_busy, False)
-				wx.CallAfter(self._finish_source_load, path, None, str(error))
+				wx.CallAfter(self._finish_source_load, path, None, None, str(error))
 				return
 			wx.CallAfter(self._set_busy, False)
-			wx.CallAfter(self._finish_source_load, path, source_info, None)
+			wx.CallAfter(self._finish_source_load, path, working_copy, source_info, None)
 
 		thread = threading.Thread(target=_worker, name="MaxLogicXTTSV2SourceProbe", daemon=True)
 		thread.start()
@@ -1985,6 +2041,76 @@ class ExtractSamplePanel(wx.Panel):
 			gui.messageBox(str(error), _("Selection not ready"), wx.OK | wx.ICON_WARNING)
 			return
 		self._start_playback(start_ms=start_ms, stop_at_ms=end_ms)
+
+	def _finish_delete_snippet(self, start_ms, result=None, error_message=None):
+		self._set_busy(False)
+		if error_message:
+			gui.messageBox(
+				_("Deleting the selected snippet failed.\nSee NVDA's log for details.\n{error}").format(error=error_message),
+				_("Delete snippet failed"),
+				wx.OK | wx.ICON_ERROR,
+			)
+			return
+		self._source_info = result
+		duration_ms = self._current_duration_ms()
+		position_ms = max(0, min(int(start_ms), duration_ms))
+		self.current_position_ctrl.SetValue(_format_timecode(position_ms))
+		self._fallback_position_ms = position_ms
+		self.start_marker_ctrl.SetValue(_format_timecode(position_ms))
+		end_ms = min(duration_ms, position_ms + 30000)
+		if end_ms <= position_ms:
+			end_ms = duration_ms
+		self.end_marker_ctrl.SetValue(_format_timecode(end_ms))
+		self._load_media_source(self._source_path)
+		self.source_summary.SetLabel(
+			_("{duration} | {sampleRate} Hz | {channels} channel(s) | {format}/{subtype} | editing temporary copy").format(
+				duration=_format_timecode(result.get("durationMs") or 0),
+				sampleRate=result.get("sampleRate") or 0,
+				channels=result.get("channels") or 0,
+				format=result.get("format") or _("Unknown"),
+				subtype=result.get("subtype") or _("Unknown"),
+			)
+		)
+		self._set_transport_ready(True)
+		self._update_marker_summary()
+		self.status_label.SetLabel(
+			_("Deleted {duration} from the temporary audio copy.").format(
+				duration=_format_timecode(result.get("deletedDurationMs") or 0),
+			)
+		)
+		self.Layout()
+
+	def on_delete_snippet(self, event):
+		if self._source_path is None:
+			return
+		try:
+			start_ms, end_ms, length_ms = self._validate_selection()
+		except Exception as error:
+			gui.messageBox(str(error), _("Selection not ready"), wx.OK | wx.ICON_WARNING)
+			return
+		response = gui.messageBox(
+			_("Delete this {duration} snippet from the temporary working copy? The original file will not be changed.").format(
+				duration=_format_timecode(length_ms),
+			),
+			_("Delete snippet?"),
+			wx.YES_NO | wx.ICON_WARNING,
+		)
+		if response != wx.YES:
+			return
+		self._reset_media_control()
+		self._set_busy(True, _("Deleting selected snippet from temporary audio..."))
+
+		def _worker():
+			try:
+				result = service.delete_audio_source_segment(self._source_path, start_ms, end_ms)
+			except Exception as error:
+				log.exception("MaxLogic XTTS v2 source snippet delete failed", exc_info=True)
+				wx.CallAfter(self._finish_delete_snippet, start_ms, None, str(error))
+				return
+			wx.CallAfter(self._finish_delete_snippet, start_ms, result, None)
+
+		thread = threading.Thread(target=_worker, name="MaxLogicXTTSV2SourceDelete", daemon=True)
+		thread.start()
 
 	def _selection_warning(self, length_ms):
 		if 10000 <= length_ms <= 30000:
@@ -2089,6 +2215,7 @@ class ExtractSamplePanel(wx.Panel):
 			except Exception:
 				pass
 			self._media = None
+		self._cleanup_working_source()
 
 
 class SpeechCachePanel(wx.Panel):

@@ -17,6 +17,7 @@ It is based on the `kokoro-tts-nvda` project structure, but the speech runtime i
 - Direct `.pth` install validates that the file is a compatible XTTS voice-conditioning file before accepting it
 - Sample playback before installing a catalog profile
 - Extract a short XTTS-ready sample from a longer recording with start/end markers
+- Edit extraction sources safely by deleting marked snippets from a temporary working copy
 - User-managed voice profiles stored outside the add-on so they survive reinstalls
 - Persistent short-speech cache and short-lived paragraph hot cache
 - Safer text chunking for long passages
@@ -83,6 +84,14 @@ Direct local install:
 - Audio files such as `.wav` and `.mp3` install as reference-audio profiles
 - `.pth` files install only if the helper can load them as a valid XTTS voice-conditioning file
 - Invalid, corrupted, or unrelated PyTorch `.pth` files are rejected before installation
+
+Extract Sample editing:
+
+- Source recordings are copied to a temporary working file before editing, so the original recording is not changed
+- Use Start marker and End marker to select interruptions, then use `Delete snippet` to remove that range from the working copy
+- The working copy is used for playback, preview, and saving the final XTTS profile
+- Temporary working files are deleted when another source recording is selected or the voice manager closes
+- Large uncompressed `.wav` sources stream directly for responsive playback and seeking when the system media control cannot load them
 
 ## Supported languages
 

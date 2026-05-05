@@ -2,6 +2,7 @@ import argparse
 import json
 import os
 import sys
+import tempfile
 
 import numpy as np
 import soundfile as sf
@@ -95,6 +96,56 @@ def _extract(path, out_path, start_ms, end_ms, normalize=False, trim_silence=Fal
 	}
 
 
+def _copy_frames(source, target, frame_count, block_size=262144):
+	remaining = int(frame_count)
+	while remaining > 0:
+		chunk_frames = min(remaining, int(block_size))
+		audio = source.read(frames=chunk_frames, always_2d=True)
+		if audio.size == 0:
+			break
+		target.write(audio)
+		remaining -= int(audio.shape[0])
+
+
+def _delete_snippet(path, start_ms, end_ms):
+	info = sf.info(path)
+	total_frames = int(info.frames)
+	sample_rate = int(info.samplerate)
+	start_frame = max(0, min(total_frames, int(round((float(start_ms) / 1000.0) * sample_rate))))
+	end_frame = max(0, min(total_frames, int(round((float(end_ms) / 1000.0) * sample_rate))))
+	if end_frame <= start_frame:
+		raise RuntimeError("End marker must be after start marker")
+	directory = os.path.dirname(path) or "."
+	base_name = os.path.basename(path)
+	temp_fd, temp_path = tempfile.mkstemp(prefix=base_name + ".", suffix=".tmp", dir=directory)
+	os.close(temp_fd)
+	try:
+		with sf.SoundFile(path, "r") as source:
+			with sf.SoundFile(
+				temp_path,
+				"w",
+				samplerate=sample_rate,
+				channels=int(info.channels),
+				format=info.format,
+				subtype=info.subtype,
+			) as target:
+				source.seek(0)
+				_copy_frames(source, target, start_frame)
+				source.seek(end_frame)
+				_copy_frames(source, target, total_frames - end_frame)
+		os.replace(temp_path, path)
+	except Exception:
+		try:
+			os.remove(temp_path)
+		except Exception:
+			pass
+		raise
+	result = _probe(path)
+	result["deletedDurationMs"] = int(round(((end_frame - start_frame) / float(sample_rate)) * 1000.0))
+	result["deletedFrames"] = int(end_frame - start_frame)
+	return result
+
+
 def main(argv=None):
 	parser = argparse.ArgumentParser(prog="maxlogic_xtts_v2_audio_tools")
 	subparsers = parser.add_subparsers(dest="command", required=True)
@@ -109,6 +160,11 @@ def main(argv=None):
 	extract_parser.add_argument("--end-ms", required=True, type=float)
 	extract_parser.add_argument("--normalize", action="store_true")
 	extract_parser.add_argument("--trim-silence", action="store_true")
+
+	delete_parser = subparsers.add_parser("delete-snippet")
+	delete_parser.add_argument("--path", required=True)
+	delete_parser.add_argument("--start-ms", required=True, type=float)
+	delete_parser.add_argument("--end-ms", required=True, type=float)
 
 	args = parser.parse_args(argv)
 	try:
@@ -126,6 +182,18 @@ def main(argv=None):
 						end_ms=args.end_ms,
 						normalize=args.normalize,
 						trim_silence=args.trim_silence,
+					),
+				}
+			)
+			return 0
+		if args.command == "delete-snippet":
+			_emit(
+				{
+					"ok": True,
+					"result": _delete_snippet(
+						args.path,
+						start_ms=args.start_ms,
+						end_ms=args.end_ms,
 					),
 				}
 			)

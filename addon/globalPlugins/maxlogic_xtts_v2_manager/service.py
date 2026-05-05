@@ -2,6 +2,7 @@
 
 import json
 import os
+import shutil
 import subprocess
 import tempfile
 import threading
@@ -52,7 +53,7 @@ _preview_lock = threading.Lock()
 _preview_helper_lock = threading.Lock()
 _preview_generation = 0
 _preview_player = None
-_preview_player_rate = None
+_preview_player_format = None
 _preview_helper = None
 _preview_helper_thread = None
 _sample_text_cache = None
@@ -212,13 +213,14 @@ def _begin_preview():
 		return generation
 
 
-def _get_preview_player(sample_rate):
+def _get_preview_player(sample_rate, channels=1, bits_per_sample=16):
 	global _preview_player
-	global _preview_player_rate
-	if _preview_player is not None and _preview_player_rate != sample_rate:
+	global _preview_player_format
+	player_format = (int(sample_rate), int(channels), int(bits_per_sample))
+	if _preview_player is not None and _preview_player_format != player_format:
 		_preview_player.close()
 		_preview_player = None
-		_preview_player_rate = None
+		_preview_player_format = None
 	if _preview_player is None:
 		output_device = None
 		try:
@@ -226,12 +228,12 @@ def _get_preview_player(sample_rate):
 		except Exception:
 			pass
 		_preview_player = nvwave.WavePlayer(
-			channels=1,
+			channels=int(channels),
 			samplesPerSec=sample_rate,
-			bitsPerSample=16,
+			bitsPerSample=int(bits_per_sample),
 			outputDevice=output_device,
 		)
-		_preview_player_rate = sample_rate
+		_preview_player_format = player_format
 	return _preview_player
 
 
@@ -263,12 +265,12 @@ def stop_preview():
 
 def close_preview_player():
 	global _preview_player
-	global _preview_player_rate
+	global _preview_player_format
 	with _preview_lock:
 		if _preview_player is not None:
 			_preview_player.close()
 			_preview_player = None
-			_preview_player_rate = None
+			_preview_player_format = None
 
 
 def _get_preview_helper(skip_prewarm=True):
@@ -465,6 +467,55 @@ def probe_audio_source(source_path):
 	return _run_audio_tool(["probe", "--path", source_path])
 
 
+def create_audio_working_copy(source_path):
+	if not os.path.isfile(source_path):
+		raise RuntimeError("Source audio file not found: %s" % source_path)
+	temp_dir = tempfile.mkdtemp(prefix="source-edit-", dir=get_temp_dir(create=True))
+	extension = os.path.splitext(source_path)[1] or ".audio"
+	target_path = os.path.join(temp_dir, "working-copy%s" % extension)
+	try:
+		shutil.copy2(source_path, target_path)
+	except Exception:
+		try:
+			shutil.rmtree(temp_dir)
+		except Exception:
+			pass
+		raise
+	return {
+		"originalPath": source_path,
+		"workingPath": target_path,
+		"cleanupDir": temp_dir,
+	}
+
+
+def delete_audio_working_copy(payload):
+	if not payload:
+		return
+	cleanup_dir = payload.get("cleanupDir")
+	working_path = payload.get("workingPath")
+	if cleanup_dir and os.path.isdir(cleanup_dir):
+		shutil.rmtree(cleanup_dir, ignore_errors=True)
+	elif working_path and os.path.isfile(working_path):
+		try:
+			os.remove(working_path)
+		except Exception:
+			pass
+
+
+def delete_audio_source_segment(source_path, start_ms, end_ms):
+	return _run_audio_tool(
+		[
+			"delete-snippet",
+			"--path",
+			source_path,
+			"--start-ms",
+			str(float(start_ms)),
+			"--end-ms",
+			str(float(end_ms)),
+		]
+	)
+
+
 def _read_pcm16_wav(path):
 	with wave.open(path, "rb") as handle:
 		if handle.getnchannels() != 1 or handle.getsampwidth() != 2:
@@ -504,6 +555,64 @@ def render_audio_source_segment(source_path, start_ms, end_ms):
 				pass
 
 
+def _can_stream_source_wav(source_path):
+	if os.path.splitext(source_path)[1].lower() != ".wav":
+		return False
+	try:
+		with wave.open(source_path, "rb") as handle:
+			compression = handle.getcomptype()
+			sample_width = int(handle.getsampwidth())
+			channels = int(handle.getnchannels())
+			return compression == "NONE" and sample_width in (1, 2) and channels in (1, 2)
+	except Exception:
+		return False
+
+
+def _play_source_wav_stream(source_path, start_ms, end_ms, generation, on_playback_started=None):
+	with wave.open(source_path, "rb") as handle:
+		if handle.getcomptype() != "NONE":
+			raise RuntimeError("Compressed WAV playback requires fallback rendering.")
+		sample_rate = int(handle.getframerate())
+		channels = int(handle.getnchannels())
+		sample_width = int(handle.getsampwidth())
+		if sample_width not in (1, 2) or channels not in (1, 2):
+			raise RuntimeError("This WAV format is not supported by the direct playback stream.")
+		total_frames = int(handle.getnframes())
+		start_frame = max(0, min(total_frames, int(round((float(start_ms) / 1000.0) * sample_rate))))
+		end_frame = max(start_frame, min(total_frames, int(round((float(end_ms) / 1000.0) * sample_rate))))
+		if end_frame <= start_frame:
+			return "completed"
+		chunk_frames = max(1, int(sample_rate / 5))
+		handle.setpos(start_frame)
+		started = False
+		while handle.tell() < end_frame:
+			with _preview_lock:
+				if generation != _preview_generation:
+					return "superseded"
+				player = _get_preview_player(
+					sample_rate,
+					channels=channels,
+					bits_per_sample=sample_width * 8,
+				)
+			frames_to_read = min(chunk_frames, end_frame - handle.tell())
+			audio_bytes = handle.readframes(frames_to_read)
+			if not audio_bytes:
+				break
+			with _preview_lock:
+				if generation != _preview_generation:
+					return "superseded"
+				player.feed(audio_bytes)
+			if not started:
+				started = True
+				if on_playback_started is not None:
+					wx.CallAfter(on_playback_started)
+			player.idle()
+		with _preview_lock:
+			if generation != _preview_generation:
+				return "superseded"
+		return "completed"
+
+
 def play_audio_source_segment(source_path, start_ms, end_ms, on_complete=None, on_playback_started=None):
 	generation = _begin_preview()
 
@@ -513,13 +622,22 @@ def play_audio_source_segment(source_path, start_ms, end_ms, on_complete=None, o
 
 	def _worker():
 		try:
-			payload = render_audio_source_segment(source_path, start_ms, end_ms)
-			status = _play_preview_audio(
-				payload["audioBytes"],
-				payload["sampleRate"],
-				generation,
-				on_playback_started=on_playback_started,
-			)
+			if _can_stream_source_wav(source_path):
+				status = _play_source_wav_stream(
+					source_path,
+					start_ms,
+					end_ms,
+					generation,
+					on_playback_started=on_playback_started,
+				)
+			else:
+				payload = render_audio_source_segment(source_path, start_ms, end_ms)
+				status = _play_preview_audio(
+					payload["audioBytes"],
+					payload["sampleRate"],
+					generation,
+					on_playback_started=on_playback_started,
+				)
 			_finish(status, None)
 		except Exception as error:
 			log.error("MaxLogic XTTS v2 source audio playback failed", exc_info=True)
@@ -1023,6 +1141,9 @@ __all__ = [
 	"VoiceStoreError",
 	"clear_speech_cache",
 	"compact_speech_cache",
+	"create_audio_working_copy",
+	"delete_audio_source_segment",
+	"delete_audio_working_copy",
 	"extract_sample_to_voice",
 	"get_speech_cache_settings",
 	"get_speech_cache_stats",
