@@ -1550,6 +1550,8 @@ class ExtractSamplePanel(wx.Panel):
 		self.delete_snippet_button = wx.Button(self, label=_("Delete snippet"))
 		selection_row.Add(self.delete_snippet_button, 0, wx.ALL, 5)
 		marker_box.Add(selection_row, 0, wx.EXPAND)
+		self.selection_hint = wx.StaticText(self, label="")
+		marker_box.Add(self.selection_hint, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM, 5)
 		main_sizer.Add(marker_box, 0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, 5)
 
 		save_box = wx.StaticBoxSizer(wx.VERTICAL, self, _("Save as XTTS profile"))
@@ -1594,6 +1596,40 @@ class ExtractSamplePanel(wx.Panel):
 		self.Bind(wx.EVT_TEXT, lambda evt: self._update_marker_summary(), self.start_marker_ctrl)
 		self.Bind(wx.EVT_TEXT, lambda evt: self._update_marker_summary(), self.end_marker_ctrl)
 		self.Bind(wx.EVT_CHOICE, lambda evt: self._apply_speed(), self.speed_choice)
+		self._bind_shortcuts()
+
+	def _bind_shortcuts(self):
+		def _command(handler):
+			command_id = int(wx.NewIdRef())
+			self.Bind(wx.EVT_MENU, handler, id=command_id)
+			return command_id
+
+		self.SetAcceleratorTable(
+			wx.AcceleratorTable(
+				[
+					(wx.ACCEL_CTRL, ord("O"), _command(self.on_browse)),
+					(wx.ACCEL_CTRL, ord("P"), _command(self.on_play_pause)),
+					(wx.ACCEL_CTRL, ord("K"), _command(self.on_stop)),
+					(wx.ACCEL_CTRL, wx.WXK_LEFT, _command(lambda evt: self._seek_relative(-5000))),
+					(wx.ACCEL_CTRL, wx.WXK_RIGHT, _command(lambda evt: self._seek_relative(5000))),
+					(wx.ACCEL_CTRL | wx.ACCEL_SHIFT, wx.WXK_LEFT, _command(lambda evt: self._seek_relative(-30000))),
+					(wx.ACCEL_CTRL | wx.ACCEL_SHIFT, wx.WXK_RIGHT, _command(lambda evt: self._seek_relative(30000))),
+					(wx.ACCEL_CTRL, ord("1"), _command(self.on_set_start)),
+					(wx.ACCEL_CTRL, ord("2"), _command(self.on_set_end)),
+					(wx.ACCEL_CTRL, ord("R"), _command(self.on_preview_selection)),
+					(wx.ACCEL_CTRL, ord("D"), _command(self.on_delete_snippet)),
+					(wx.ACCEL_CTRL, ord("S"), _command(self.on_save_profile)),
+				]
+			)
+		)
+
+	def _shortcut_hint(self):
+		return _(
+			"Shortcuts: Ctrl+O browse, Ctrl+P play/pause, Ctrl+K stop, Ctrl+Left/Right 5s, Ctrl+Shift+Left/Right 30s, Ctrl+1 start, Ctrl+2 end, Ctrl+R preview, Ctrl+D delete, Ctrl+S save."
+		)
+
+	def _control_available(self, control):
+		return control is not None and control.IsEnabled() and not self._busy
 
 	def _set_transport_ready(self, ready):
 		self._transport_ready = bool(ready)
@@ -1696,7 +1732,7 @@ class ExtractSamplePanel(wx.Panel):
 		self.current_position_ctrl.SetValue(_format_timecode(target))
 
 	def _seek_relative(self, delta_ms):
-		if not self._transport_ready:
+		if not self._transport_ready or self._busy:
 			return
 		target = self._current_position_ms() + int(delta_ms)
 		self._seek_absolute(target)
@@ -1863,8 +1899,16 @@ class ExtractSamplePanel(wx.Panel):
 			__start_ms, __end_ms, length_ms = self._validate_selection()
 		except Exception:
 			self.selection_length_ctrl.SetValue(_("Not ready"))
+			self.selection_hint.SetLabel(self._shortcut_hint())
 			return
 		self.selection_length_ctrl.SetValue(_format_timecode(length_ms))
+		if 10000 <= length_ms <= 30000:
+			quality = _("Selection length is in the recommended XTTS range.")
+		elif length_ms < 10000:
+			quality = _("Selection is short; aim for 10 to 30 seconds of clean speech.")
+		else:
+			quality = _("Selection is long; XTTS usually works better with 10 to 30 seconds.")
+		self.selection_hint.SetLabel(_("{quality} {shortcuts}").format(quality=quality, shortcuts=self._shortcut_hint()))
 
 	def _load_media_source(self, path):
 		self._stop_playback()
@@ -1933,6 +1977,8 @@ class ExtractSamplePanel(wx.Panel):
 		self._update_marker_summary()
 
 	def on_browse(self, event):
+		if not self._control_available(self.browse_button):
+			return
 		dialog = wx.FileDialog(
 			parent=gui.mainFrame,
 			message=_("Choose a source recording"),
@@ -1975,7 +2021,7 @@ class ExtractSamplePanel(wx.Panel):
 		thread.start()
 
 	def on_play_pause(self, event):
-		if not self._transport_ready:
+		if not self._control_available(self.play_pause_button) or not self._transport_ready:
 			return
 		if self._playing():
 			if self._media is not None and self._media_loaded:
@@ -1991,6 +2037,8 @@ class ExtractSamplePanel(wx.Panel):
 		self._start_playback(start_ms=None, stop_at_ms=None)
 
 	def on_stop(self, event):
+		if not self._control_available(self.stop_button):
+			return
 		self._stop_playback(reset_stop_at=True)
 		self._seek_absolute(0)
 
@@ -2007,18 +2055,24 @@ class ExtractSamplePanel(wx.Panel):
 			self._stop_timer()
 
 	def on_set_start(self, event):
+		if not self._control_available(self.set_start_button):
+			return
 		position_ms = self._current_position_ms()
 		self.start_marker_ctrl.SetValue(_format_timecode(position_ms))
 		self._update_marker_summary()
 		ui.message(_("Start marker set to {time}").format(time=_format_timecode(position_ms)))
 
 	def on_set_end(self, event):
+		if not self._control_available(self.set_end_button):
+			return
 		position_ms = self._current_position_ms()
 		self.end_marker_ctrl.SetValue(_format_timecode(position_ms))
 		self._update_marker_summary()
 		ui.message(_("End marker set to {time}").format(time=_format_timecode(position_ms)))
 
 	def on_play_before_start(self, event):
+		if not self._control_available(self.play_before_start_button):
+			return
 		try:
 			start_ms = _parse_timecode(self.start_marker_ctrl.GetValue())
 		except Exception as error:
@@ -2027,6 +2081,8 @@ class ExtractSamplePanel(wx.Panel):
 		self._start_playback(start_ms=max(0, start_ms - 3000), stop_at_ms=start_ms)
 
 	def on_play_after_end(self, event):
+		if not self._control_available(self.play_after_end_button):
+			return
 		try:
 			end_ms = _parse_timecode(self.end_marker_ctrl.GetValue())
 		except Exception as error:
@@ -2035,6 +2091,8 @@ class ExtractSamplePanel(wx.Panel):
 		self._start_playback(start_ms=end_ms, stop_at_ms=min(self._current_duration_ms(), end_ms + 3000))
 
 	def on_preview_selection(self, event):
+		if not self._control_available(self.preview_selection_button):
+			return
 		try:
 			start_ms, end_ms, __length_ms = self._validate_selection()
 		except Exception as error:
@@ -2081,6 +2139,8 @@ class ExtractSamplePanel(wx.Panel):
 		self.Layout()
 
 	def on_delete_snippet(self, event):
+		if not self._control_available(self.delete_snippet_button):
+			return
 		if self._source_path is None:
 			return
 		try:
@@ -2198,6 +2258,8 @@ class ExtractSamplePanel(wx.Panel):
 		thread.start()
 
 	def on_save_profile(self, event):
+		if not self._control_available(self.save_button):
+			return
 		if self._source_info is None:
 			gui.messageBox(
 				_("Choose a source recording first."),

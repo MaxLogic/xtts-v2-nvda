@@ -9,3 +9,4 @@
 - added direct `.pth` install support with compatibility validation
 - added sample extraction from long recordings inside the voice manager
 - added safe Extract Sample editing with temporary working copies, snippet deletion, and direct streaming playback for large WAV sources
+- added Extract Sample keyboard shortcuts and live selection-length guidance

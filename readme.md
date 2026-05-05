@@ -18,6 +18,7 @@ It is based on the `kokoro-tts-nvda` project structure, but the speech runtime i
 - Sample playback before installing a catalog profile
 - Extract a short XTTS-ready sample from a longer recording with start/end markers
 - Edit extraction sources safely by deleting marked snippets from a temporary working copy
+- Keyboard shortcuts for Extract Sample transport, markers, preview, deletion, and saving
 - User-managed voice profiles stored outside the add-on so they survive reinstalls
 - Persistent short-speech cache and short-lived paragraph hot cache
 - Safer text chunking for long passages
@@ -92,6 +93,8 @@ Extract Sample editing:
 - The working copy is used for playback, preview, and saving the final XTTS profile
 - Temporary working files are deleted when another source recording is selected or the voice manager closes
 - Large uncompressed `.wav` sources stream directly for responsive playback and seeking when the system media control cannot load them
+- The panel shows whether the current selection is shorter than, longer than, or within the recommended 10 to 30 second XTTS sample range
+- Keyboard shortcuts: `Ctrl+O` browse, `Ctrl+P` play or pause, `Ctrl+K` stop, `Ctrl+Left`/`Ctrl+Right` move 5 seconds, `Ctrl+Shift+Left`/`Ctrl+Shift+Right` move 30 seconds, `Ctrl+1` set start, `Ctrl+2` set end, `Ctrl+R` preview selection, `Ctrl+D` delete snippet, and `Ctrl+S` save
 
 ## Supported languages
 
