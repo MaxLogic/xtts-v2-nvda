@@ -16,6 +16,7 @@ except ImportError:
 
 VOICE_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
 AUDIO_EXTENSIONS = (".wav", ".mp3", ".flac", ".ogg", ".m4a", ".aac")
+CONDITIONING_EXTENSIONS = (".pth",)
 PROFILE_FILE_NAME = "profile.json"
 
 
@@ -32,6 +33,7 @@ class VoiceRecord(object):
 	voice_id: str
 	profile_path: str
 	reference_paths: list
+	conditioning_path: str
 	source: str
 	source_root: str
 	metadata_path: str = None
@@ -68,6 +70,10 @@ def _normalize_voice_id(name):
 	return voice_id
 
 
+def normalize_voice_id(name):
+	return _normalize_voice_id(name)
+
+
 def _load_json(path):
 	with open(path, "r", encoding="utf-8-sig") as handle:
 		return json.load(handle)
@@ -82,6 +88,10 @@ def _is_audio_file(path):
 	return os.path.splitext(path)[1].lower() in AUDIO_EXTENSIONS
 
 
+def _is_conditioning_file(path):
+	return os.path.splitext(path)[1].lower() in CONDITIONING_EXTENSIONS
+
+
 def _list_audio_files(root):
 	audio_paths = []
 	for entry in sorted(os.listdir(root)):
@@ -91,6 +101,20 @@ def _list_audio_files(root):
 	return audio_paths
 
 
+def _resolve_conditioning_file(root, metadata):
+	configured_name = (metadata or {}).get("conditioningFile")
+	if configured_name:
+		configured_path = os.path.join(root, configured_name)
+		if os.path.isfile(configured_path) and _is_conditioning_file(configured_path):
+			return configured_path
+		raise VoiceStoreError("Voice profile conditioning file is missing: %s" % configured_name)
+	for entry in sorted(os.listdir(root)):
+		path = os.path.join(root, entry)
+		if os.path.isfile(path) and _is_conditioning_file(path):
+			return path
+	return None
+
+
 def _profile_payload_from_dir(profile_dir):
 	metadata_path = os.path.join(profile_dir, PROFILE_FILE_NAME)
 	metadata = {}
@@ -98,14 +122,18 @@ def _profile_payload_from_dir(profile_dir):
 		metadata = _load_json(metadata_path)
 	voice_id = _normalize_voice_id(metadata.get("voiceId") or os.path.basename(profile_dir))
 	reference_paths = _list_audio_files(profile_dir)
-	if not reference_paths:
-		raise VoiceStoreError("Voice profile has no reference audio files: %s" % profile_dir)
+	conditioning_path = _resolve_conditioning_file(profile_dir, metadata)
+	if not reference_paths and not conditioning_path:
+		raise VoiceStoreError("Voice profile has neither reference audio nor XTTS conditioning data: %s" % profile_dir)
 	metadata.setdefault("voiceId", voice_id)
 	metadata.setdefault("displayName", voice_id.replace("_", " ").title())
+	if conditioning_path:
+		metadata.setdefault("conditioningFile", os.path.basename(conditioning_path))
 	return VoiceRecord(
 		voice_id=voice_id,
 		profile_path=metadata_path,
 		reference_paths=reference_paths,
+		conditioning_path=conditioning_path,
 		source="unknown",
 		source_root=profile_dir,
 		metadata_path=metadata_path if os.path.isfile(metadata_path) else None,
@@ -240,10 +268,31 @@ def _stage_profile_from_audio(source_path):
 	return target_dir, staging_root
 
 
-def _prepare_staged_profile(source_path, source_type, install_note=None, extra_metadata=None):
+def _stage_profile_from_conditioning(source_path):
+	voice_id = _normalize_voice_id(source_path)
+	staging_root = tempfile.mkdtemp(dir=get_temp_dir(create=True))
+	target_dir = os.path.join(staging_root, voice_id)
+	os.makedirs(target_dir, exist_ok=True)
+	filename = "%s.pth" % voice_id
+	shutil.copyfile(source_path, os.path.join(target_dir, filename))
+	metadata = create_voice_metadata(
+		voice_id,
+		source_type="local-file",
+		source_path=source_path,
+		reference_files=[],
+		install_note="Installed from local XTTS conditioning file",
+		extra={"conditioningFile": filename},
+	)
+	_write_json(os.path.join(target_dir, PROFILE_FILE_NAME), metadata)
+	return target_dir, staging_root
+
+
+def _prepare_staged_profile(source_path, source_type, install_note=None, extra_metadata=None, validate_conditioning=None):
 	extension = os.path.splitext(source_path)[1].lower()
 	if extension in AUDIO_EXTENSIONS:
 		profile_dir, cleanup_root = _stage_profile_from_audio(source_path)
+	elif extension in CONDITIONING_EXTENSIONS:
+		profile_dir, cleanup_root = _stage_profile_from_conditioning(source_path)
 	elif extension == ".zip":
 		cleanup_root = _extract_archive(source_path)
 		profile_dir = _find_profile_root(cleanup_root, source_path)
@@ -258,20 +307,23 @@ def _prepare_staged_profile(source_path, source_type, install_note=None, extra_m
 			source_path=source_path,
 			reference_files=[os.path.basename(path) for path in record.reference_paths],
 			install_note=install_note,
-			extra=extra_metadata or {},
+			extra=dict(extra_metadata or {}, **({"conditioningFile": os.path.basename(record.conditioning_path)} if record.conditioning_path else {})),
 		)
 	)
 	metadata.setdefault("displayName", record.display_name)
 	_write_json(os.path.join(profile_dir, PROFILE_FILE_NAME), metadata)
+	if validate_conditioning is not None and record.conditioning_path:
+		validate_conditioning(record.conditioning_path)
 	return profile_dir, metadata, cleanup_root
 
 
-def install_voice_files(source_path, source_type, overwrite=False, install_note=None, extra_metadata=None):
+def install_voice_files(source_path, source_type, overwrite=False, install_note=None, extra_metadata=None, validate_conditioning=None):
 	profile_dir, metadata, cleanup_root = _prepare_staged_profile(
 		source_path,
 		source_type=source_type,
 		install_note=install_note,
 		extra_metadata=extra_metadata,
+		validate_conditioning=validate_conditioning,
 	)
 	voice_id = metadata["voiceId"]
 	target_dir = get_user_voice_profile_dir(voice_id)
@@ -305,15 +357,24 @@ def resolve_preview_reference_paths(source_path):
 		raise VoiceStoreError("Missing preview voice source")
 	if os.path.isfile(source_path) and _is_audio_file(source_path):
 		return [source_path], None
+	if os.path.isfile(source_path) and _is_conditioning_file(source_path):
+		raise VoiceStoreError("XTTS conditioning files cannot be previewed directly before installation")
 	if os.path.isdir(source_path):
 		record = _profile_payload_from_dir(source_path)
+		if not record.reference_paths:
+			raise VoiceStoreError("This XTTS profile has no reference audio available for direct preview")
 		return record.reference_paths, None
 	if os.path.isfile(source_path) and os.path.basename(source_path).lower() == PROFILE_FILE_NAME:
 		record = _profile_payload_from_dir(os.path.dirname(source_path))
+		if not record.reference_paths:
+			raise VoiceStoreError("This XTTS profile has no reference audio available for direct preview")
 		return record.reference_paths, None
 	if os.path.isfile(source_path) and os.path.splitext(source_path)[1].lower() == ".zip":
 		extracted_root = _extract_archive(source_path)
 		profile_dir = _find_profile_root(extracted_root, source_path)
 		record = _profile_payload_from_dir(profile_dir)
+		if not record.reference_paths:
+			shutil.rmtree(extracted_root, ignore_errors=True)
+			raise VoiceStoreError("This XTTS archive has no reference audio available for direct preview")
 		return record.reference_paths, extracted_root
 	raise VoiceStoreError("Unsupported preview source: %s" % source_path)

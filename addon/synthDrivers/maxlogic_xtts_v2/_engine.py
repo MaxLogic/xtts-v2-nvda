@@ -177,7 +177,7 @@ class XTTSV2Engine(object):
 		fallback_roots = [("package", root) for root in _resolve_asset_root(package_root)]
 		voice_records, __ = discover_voice_records(package_root, fallback_roots)
 		if not voice_records:
-			missing.append("voices/*.(wav|mp3|flac|ogg|m4a|aac)")
+			missing.append("voices/*.(wav|mp3|flac|ogg|m4a|aac|pth)")
 		return missing
 
 	def _should_use_gpu(self):
@@ -239,6 +239,30 @@ class XTTSV2Engine(object):
 	def close(self):
 		self.tts = None
 
+	def validate_conditioning_file(self, conditioning_path):
+		if not conditioning_path or not os.path.isfile(conditioning_path):
+			raise VoiceStoreError("XTTS conditioning file not found: %s" % conditioning_path)
+		temp_dir = tempfile.mkdtemp(prefix="maxlogic-xtts-v2-validate-")
+		voice_id = "validation_voice"
+		target_path = os.path.join(temp_dir, "%s.pth" % voice_id)
+		try:
+			shutil.copyfile(conditioning_path, target_path)
+			voice = self.tts.synthesizer.tts_model.load_voice_file(voice_id, temp_dir)
+			if not isinstance(voice, dict):
+				raise RuntimeError("XTTS conditioning file returned an unexpected payload")
+			for key in ("gpt_conditioning_latents", "speaker_embedding"):
+				if key not in voice or voice[key] is None:
+					raise RuntimeError("XTTS conditioning file is missing required field '%s'" % key)
+			return {
+				"voiceId": voice_id,
+				"keys": sorted(voice.keys()),
+			}
+		except Exception as error:
+			log.warning("XTTS conditioning validation failed for %s: %s", conditioning_path, error)
+			raise VoiceStoreError("Unsupported or corrupted XTTS conditioning file")
+		finally:
+			shutil.rmtree(temp_dir, ignore_errors=True)
+
 	def synthesize_to_int16(self, text, speed=1.0, voice=None, volume=1.0, language="en-us", generation=None):
 		voice_name = voice or self.current_voice
 		if voice_name is None:
@@ -249,19 +273,20 @@ class XTTSV2Engine(object):
 		return self._synthesize_from_references(
 			text,
 			record.reference_paths,
+			conditioning_path=record.conditioning_path,
 			cache_key=voice_name,
 			speed=speed,
 			volume=volume,
 			language=language,
 		)
 
-	def synthesize_preview_to_int16(self, text, voice_path, speed=1.0, volume=1.0, language="en-us"):
+	def synthesize_preview_to_int16(self, text, voice_path, speed=1.0, volume=1.0, language="en-us", cache_key=None):
 		reference_paths, cleanup_root = resolve_preview_reference_paths(voice_path)
 		try:
 			return self._synthesize_from_references(
 				text,
 				reference_paths,
-				cache_key=self._build_voice_cache_key(reference_paths),
+				cache_key=(cache_key or self._build_voice_cache_key(reference_paths)),
 				speed=speed,
 				volume=volume,
 				language=language,
@@ -280,10 +305,14 @@ class XTTSV2Engine(object):
 			normalized = "en"
 		return normalized
 
-	def _synthesize_from_references(self, text, reference_paths, cache_key=None, speed=1.0, volume=1.0, language="en-us"):
+	def _synthesize_from_references(self, text, reference_paths, conditioning_path=None, cache_key=None, speed=1.0, volume=1.0, language="en-us"):
 		normalized_language = self._normalize_language(language)
 		speed = max(0.6, min(1.8, float(speed)))
-		voice = self._get_or_create_voice_conditioning(reference_paths, cache_key=cache_key)
+		voice = self._get_or_create_voice_conditioning(
+			reference_paths,
+			cache_key=cache_key,
+			conditioning_path=conditioning_path,
+		)
 		waveform = self._tts_with_cached_voice(
 			text=text,
 			voice=voice,
@@ -296,10 +325,13 @@ class XTTSV2Engine(object):
 		waveform = np.clip(waveform * max(0.0, min(1.0, float(volume))), -1.0, 1.0)
 		return (waveform * 32767.0).astype(np.int16, copy=False)
 
-	def _build_voice_cache_key(self, reference_paths):
+	def _build_voice_cache_key(self, reference_paths, conditioning_path=None):
 		digest = hashlib.sha256()
 		digest.update(self.model_name.encode("utf-8"))
-		for path in sorted(os.path.abspath(path) for path in reference_paths):
+		paths = [os.path.abspath(path) for path in (reference_paths or []) if path]
+		if conditioning_path:
+			paths.append(os.path.abspath(conditioning_path))
+		for path in sorted(paths):
 			digest.update(path.encode("utf-8", errors="replace"))
 			try:
 				stats = os.stat(path)
@@ -331,14 +363,17 @@ class XTTSV2Engine(object):
 			prepared_paths.append(target_path)
 		return prepared_paths, cleanup_root
 
-	def _get_or_create_voice_conditioning(self, reference_paths, cache_key=None):
-		cache_key = cache_key or self._build_voice_cache_key(reference_paths)
+	def _get_or_create_voice_conditioning(self, reference_paths, cache_key=None, conditioning_path=None):
+		cache_key = cache_key or self._build_voice_cache_key(reference_paths, conditioning_path=conditioning_path)
 		voice = self._voice_conditioning.get(cache_key)
 		if voice is not None:
 			return voice
 		model = self.tts.synthesizer.tts_model
 		voice_file_path = os.path.join(self.voice_cache_dir, "%s.pth" % cache_key)
-		if os.path.isfile(voice_file_path):
+		if conditioning_path:
+			shutil.copyfile(conditioning_path, voice_file_path)
+			voice = model.load_voice_file(cache_key, self.voice_cache_dir)
+		elif os.path.isfile(voice_file_path):
 			voice = model.load_voice_file(cache_key, self.voice_cache_dir)
 		else:
 			prepared_reference_paths, cleanup_root = self._prepare_reference_paths(reference_paths)

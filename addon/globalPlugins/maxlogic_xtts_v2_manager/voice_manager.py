@@ -1,12 +1,18 @@
 # coding: utf-8
 
 from datetime import datetime
+import os
 import threading
+import time
 
 import gui
 from logHandler import log
 import ui
 import wx
+try:
+	import wx.media as wxmedia
+except Exception:
+	wxmedia = None
 
 from . import service
 
@@ -73,10 +79,67 @@ def _format_count_hint(visible_count, total_count, selected_count):
 	)
 
 
+def _format_huggingface_hint(payload):
+	query = payload.get("query") or _("xtts")
+	count = int(payload.get("count") or 0)
+	fetched_at = payload.get("fetchedAt")
+	if fetched_at:
+		try:
+			fetched_label = datetime.fromisoformat(fetched_at.replace("Z", "+00:00")).strftime("%Y-%m-%d %H:%M UTC")
+		except Exception:
+			fetched_label = fetched_at
+	else:
+		fetched_label = _("unknown time")
+	return _("Hugging Face search for '{query}' returned {count} playable XTTS results at {time}.").format(
+		query=query,
+		count=count,
+		time=fetched_label,
+	)
+
+
 def _format_cache_size(size_bytes):
 	if not size_bytes:
 		return _("0 MB")
 	return _("{size:.2f} MB").format(size=(size_bytes / float(1024 * 1024)))
+
+
+def _format_timecode(ms):
+	ms = max(0, int(round(float(ms or 0))))
+	hours, remainder = divmod(ms, 3600000)
+	minutes, remainder = divmod(remainder, 60000)
+	seconds, millis = divmod(remainder, 1000)
+	return "%02d:%02d:%02d.%03d" % (hours, minutes, seconds, millis)
+
+
+def _parse_timecode(value):
+	text = (value or "").strip()
+	if not text:
+		raise ValueError(_("Enter a time value."))
+	if ":" not in text:
+		seconds = float(text)
+		if seconds < 0:
+			raise ValueError(_("Time values cannot be negative."))
+		return int(round(seconds * 1000.0))
+	parts = text.split(":")
+	if len(parts) > 3:
+		raise ValueError(_("Use hh:mm:ss, mm:ss, or seconds."))
+	try:
+		parts = [float(part) for part in parts]
+	except ValueError:
+		raise ValueError(_("Use hh:mm:ss, mm:ss, or seconds."))
+	if len(parts) == 2:
+		minutes, seconds = parts
+		hours = 0.0
+	else:
+		hours, minutes, seconds = parts
+	if min(hours, minutes, seconds) < 0:
+		raise ValueError(_("Time values cannot be negative."))
+	total_seconds = (hours * 3600.0) + (minutes * 60.0) + seconds
+	return int(round(total_seconds * 1000.0))
+
+
+def _preview_language_options(auto_label):
+	return [("", auto_label)] + service.get_preview_language_options()
 
 
 class InstalledVoicesPanel(wx.Panel):
@@ -87,6 +150,8 @@ class InstalledVoicesPanel(wx.Panel):
 		self._builtin_voices = []
 		self._setup_busy = None
 		self._preview_in_progress = False
+		self._preview_playing = False
+		self._preview_request_id = 0
 		self._refresh_generation = 0
 		sizer = wx.BoxSizer(wx.VERTICAL)
 		setup_box = wx.StaticBoxSizer(wx.VERTICAL, self, _("Getting started"))
@@ -107,6 +172,16 @@ class InstalledVoicesPanel(wx.Panel):
 		self.builtin_list = wx.ListBox(self, style=wx.LB_SINGLE)
 		self.builtin_list.Enable(False)
 		sizer.Add(self.builtin_list, 1, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, 5)
+		preview_row = wx.BoxSizer(wx.HORIZONTAL)
+		self._preview_language_options = _preview_language_options(_("Auto (voice default)"))
+		preview_row.Add(wx.StaticText(self, label=_("Preview language")), 0, wx.ALIGN_CENTER_VERTICAL | wx.ALL, 5)
+		self.preview_language_choice = wx.Choice(
+			self,
+			choices=[label for __, label in self._preview_language_options],
+		)
+		self.preview_language_choice.SetSelection(0)
+		preview_row.Add(self.preview_language_choice, 0, wx.ALL, 5)
+		sizer.Add(preview_row, 0, wx.LEFT | wx.RIGHT, 0)
 		button_row = wx.BoxSizer(wx.HORIZONTAL)
 		self.install_button = wx.Button(self, label=_("Install from local file"))
 		self.remove_button = wx.Button(self, label=_("Remove selected voice"))
@@ -128,16 +203,26 @@ class InstalledVoicesPanel(wx.Panel):
 		service.prepare_preview_runtime_async()
 		self.refresh_entries()
 
+	def _update_preview_button_state(self, is_loading=False):
+		self.preview_button.SetLabel(_("Stop") if self._preview_playing else _("Play sample"))
+		can_start = (not is_loading) and self._selected_record() is not None and not self._preview_in_progress
+		self.preview_button.Enable(self._preview_playing or can_start)
+
+	def _update_preview_lock_state(self, is_loading=False):
+		locked = self._preview_in_progress or is_loading
+		self.voice_list.Enable(not locked)
+		self.builtin_list.Enable(not locked)
+		self.install_button.Enable(not locked)
+		self.refresh_button.Enable(not locked)
+		self.setup_button.Enable((not locked) and self._setup_busy is None)
+		self.remove_button.Enable((not locked) and bool(self._user_voices))
+
 	def _set_loading_state(self, is_loading, message=None):
-		self.voice_list.Enable(not is_loading)
-		self.builtin_list.Enable(not is_loading)
-		self.install_button.Enable(not is_loading)
-		self.refresh_button.Enable(not is_loading)
-		self.setup_button.Enable(not is_loading and self._setup_busy is None)
+		self.preview_language_choice.Enable(not is_loading and not self._preview_in_progress)
 		if is_loading and message:
 			self.setup_status.SetLabel(message)
-		self.remove_button.Enable((not is_loading) and bool(self._user_voices))
-		self.preview_button.Enable((not is_loading) and self._selected_record() is not None and not self._preview_in_progress)
+		self._update_preview_lock_state(is_loading=is_loading)
+		self._update_preview_button_state(is_loading=is_loading)
 		self.Layout()
 
 	def _apply_inventory(self, inventory, setup_status):
@@ -191,16 +276,22 @@ class InstalledVoicesPanel(wx.Panel):
 			return self._builtin_voices[index]
 		return None
 
+	def _selected_preview_language(self):
+		index = self.preview_language_choice.GetSelection()
+		if index == wx.NOT_FOUND or index >= len(self._preview_language_options):
+			return None
+		return self._preview_language_options[index][0] or None
+
 	def on_select_user_voice(self, event):
 		if self.voice_list.GetSelection() != wx.NOT_FOUND:
 			self.builtin_list.SetSelection(wx.NOT_FOUND)
-		self.preview_button.Enable(self._selected_record() is not None and not self._preview_in_progress)
+		self._update_preview_button_state()
 		event.Skip()
 
 	def on_select_builtin_voice(self, event):
 		if self.builtin_list.GetSelection() != wx.NOT_FOUND:
 			self.voice_list.SetSelection(wx.NOT_FOUND)
-		self.preview_button.Enable(self._selected_record() is not None and not self._preview_in_progress)
+		self._update_preview_button_state()
 		event.Skip()
 
 	def _run_busy(self, message, callback):
@@ -254,8 +345,8 @@ class InstalledVoicesPanel(wx.Panel):
 	def on_install(self, event):
 		dialog = wx.FileDialog(
 			parent=gui.mainFrame,
-			message=_("Choose XTTS reference audio or a profile bundle"),
-			wildcard="XTTS profile files (*.wav;*.mp3;*.flac;*.ogg;*.m4a;*.aac;*.zip)|*.wav;*.mp3;*.flac;*.ogg;*.m4a;*.aac;*.zip",
+			message=_("Choose XTTS reference audio, a conditioning file, or a profile bundle"),
+			wildcard="XTTS profile files (*.wav;*.mp3;*.flac;*.ogg;*.m4a;*.aac;*.pth;*.zip)|*.wav;*.mp3;*.flac;*.ogg;*.m4a;*.aac;*.pth;*.zip",
 			style=wx.FD_OPEN | wx.FD_FILE_MUST_EXIST,
 		)
 		gui.mainFrame.prePopup()
@@ -333,6 +424,16 @@ class InstalledVoicesPanel(wx.Panel):
 		gui.messageBox(message, _("Voice removed"), wx.OK | wx.ICON_INFORMATION)
 
 	def on_play_sample(self, event):
+		if self._preview_playing:
+			self._preview_request_id += 1
+			service.stop_preview()
+			self._preview_in_progress = False
+			self._preview_playing = False
+			self.preview_language_choice.Enable(True)
+			self.setup_status.SetLabel(service.get_setup_status()["message"])
+			self._update_preview_lock_state()
+			self._update_preview_button_state()
+			return
 		record = self._selected_record()
 		if record is None:
 			gui.messageBox(
@@ -342,16 +443,37 @@ class InstalledVoicesPanel(wx.Panel):
 			)
 			return
 		self._preview_in_progress = True
-		self.preview_button.Enable(False)
+		self._preview_playing = False
+		self._preview_request_id += 1
+		request_id = self._preview_request_id
+		self._update_preview_lock_state()
+		self._update_preview_button_state()
+		self.preview_language_choice.Enable(False)
 		status_message = _("Generating sample for {name}. The first preview can take around a minute.").format(
 			name=record.display_name,
 		)
 		self.setup_status.SetLabel(status_message)
 		ui.message(status_message)
 
-		def _on_complete(error_message):
+		def _on_started():
+			if request_id != self._preview_request_id:
+				return
+			self._preview_playing = True
+			self._update_preview_lock_state()
+			self._update_preview_button_state()
+			self.setup_status.SetLabel(_("Playing sample for {name}.").format(name=record.display_name))
+
+		def _on_complete(status, error_message):
+			if request_id != self._preview_request_id:
+				return
 			self._preview_in_progress = False
-			self.preview_button.Enable(self._selected_record() is not None)
+			self._preview_playing = False
+			self._update_preview_lock_state()
+			self._update_preview_button_state()
+			self.preview_language_choice.Enable(True)
+			if status in ("superseded", "stopped"):
+				self.setup_status.SetLabel(service.get_setup_status()["message"])
+				return
 			if error_message:
 				self.setup_status.SetLabel(_("Sample playback failed."))
 				gui.messageBox(
@@ -362,7 +484,12 @@ class InstalledVoicesPanel(wx.Panel):
 				return
 			self.setup_status.SetLabel(service.get_setup_status()["message"])
 
-		service.play_installed_voice_sample(record, on_complete=_on_complete)
+		service.play_installed_voice_sample(
+			record,
+			on_complete=_on_complete,
+			preview_language=self._selected_preview_language(),
+			on_playback_started=_on_started,
+		)
 
 
 class CatalogVoicesPanel(wx.Panel):
@@ -380,6 +507,8 @@ class CatalogVoicesPanel(wx.Panel):
 		self._checked_ids = set()
 		self._language_options = [("", _("All languages"))]
 		self._preview_in_progress = False
+		self._preview_playing = False
+		self._preview_request_id = 0
 		self._refresh_generation = 0
 		sizer = wx.BoxSizer(wx.VERTICAL)
 		sizer.Add(wx.StaticText(self, label=title), 0, wx.ALL, 5)
@@ -411,6 +540,16 @@ class CatalogVoicesPanel(wx.Panel):
 		sizer.Add(self.empty_hint, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM, 5)
 		self.catalog_hint = wx.StaticText(self, label="")
 		sizer.Add(self.catalog_hint, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM, 5)
+		preview_row = wx.BoxSizer(wx.HORIZONTAL)
+		self._preview_language_options = _preview_language_options(_("Auto (voice language)"))
+		preview_row.Add(wx.StaticText(self, label=_("Preview language")), 0, wx.ALIGN_CENTER_VERTICAL | wx.ALL, 5)
+		self.preview_language_choice = wx.Choice(
+			self,
+			choices=[label for __, label in self._preview_language_options],
+		)
+		self.preview_language_choice.SetSelection(0)
+		preview_row.Add(self.preview_language_choice, 0, wx.ALL, 5)
+		sizer.Add(preview_row, 0, wx.LEFT | wx.RIGHT, 0)
 
 		button_row = wx.BoxSizer(wx.HORIZONTAL)
 		self.select_button = wx.Button(self, label=_("Select visible"))
@@ -431,7 +570,7 @@ class CatalogVoicesPanel(wx.Panel):
 		self.Bind(wx.EVT_CHOICE, lambda evt: self._apply_filters(), self.language_choice)
 		if self.hide_installed_checkbox is not None:
 			self.Bind(wx.EVT_CHECKBOX, lambda evt: self._apply_filters(), self.hide_installed_checkbox)
-		self.Bind(wx.EVT_LISTBOX, lambda evt: self._update_action_state(), self.voice_list)
+		self.Bind(wx.EVT_LISTBOX, lambda evt: (self._update_detail_hint(), self._update_action_state()), self.voice_list)
 		self.Bind(wx.EVT_CHECKLISTBOX, self.on_toggle_entry, self.voice_list)
 		self.Bind(wx.EVT_BUTTON, lambda evt: self.on_select_visible(), self.select_button)
 		self.Bind(wx.EVT_BUTTON, lambda evt: self.on_clear_visible(), self.clear_button)
@@ -440,6 +579,21 @@ class CatalogVoicesPanel(wx.Panel):
 		self.Bind(wx.EVT_BUTTON, lambda evt: self.refresh_entries(force_refresh=True), self.refresh_button)
 		service.prepare_preview_runtime_async()
 		self.refresh_entries()
+
+	def _update_preview_button_state(self):
+		focused_entry = self._focused_entry()
+		self.preview_button.SetLabel(_("Stop") if self._preview_playing else _("Play sample"))
+		can_start = focused_entry is not None and focused_entry.get("availableOnline", True) and not self._preview_in_progress
+		self.preview_button.Enable(self._preview_playing or can_start)
+
+	def _update_preview_lock_state(self):
+		locked = self._preview_in_progress
+		self.search_text.Enable(not locked)
+		self.gender_choice.Enable(not locked)
+		self.language_choice.Enable(not locked)
+		if self.hide_installed_checkbox is not None:
+			self.hide_installed_checkbox.Enable(not locked)
+		self.refresh_button.Enable((not locked) and self._allow_refresh)
 
 	def _format_entry(self, entry):
 		size_bytes = entry.get("remoteSizeBytes") or entry.get("sizeBytes") or 0
@@ -473,6 +627,12 @@ class CatalogVoicesPanel(wx.Panel):
 			return ""
 		return self._language_options[index][0]
 
+	def _selected_preview_language(self):
+		index = self.preview_language_choice.GetSelection()
+		if index == wx.NOT_FOUND or index >= len(self._preview_language_options):
+			return None
+		return self._preview_language_options[index][0] or None
+
 	def _update_language_choices(self):
 		current_key = self._selected_language_key()
 		options = [("", _("All languages"))]
@@ -498,17 +658,23 @@ class CatalogVoicesPanel(wx.Panel):
 		self.search_text.Enable(not is_loading)
 		self.gender_choice.Enable(not is_loading)
 		self.language_choice.Enable(not is_loading)
+		self.preview_language_choice.Enable(not is_loading and not self._preview_in_progress)
 		if self.hide_installed_checkbox is not None:
 			self.hide_installed_checkbox.Enable(not is_loading)
 		self.voice_list.Enable(not is_loading)
 		self.select_button.Enable(False if is_loading else self.select_button.IsEnabled())
 		self.clear_button.Enable(False if is_loading else self.clear_button.IsEnabled())
-		self.preview_button.Enable(False if is_loading else self.preview_button.IsEnabled())
+		if is_loading:
+			self.preview_button.Enable(False)
+		else:
+			self._update_preview_button_state()
 		self.download_button.Enable(False if is_loading else self.download_button.IsEnabled())
 		self.refresh_button.Enable((not is_loading) and self._allow_refresh)
 		if is_loading:
 			self.result_hint.SetLabel(message or _("Loading catalog..."))
 			self.empty_hint.SetLabel("")
+		else:
+			self._update_preview_lock_state()
 		self.Layout()
 
 	def _apply_refresh_payload(self, entries, payload, inventory):
@@ -596,13 +762,12 @@ class CatalogVoicesPanel(wx.Panel):
 
 	def _update_action_state(self):
 		has_visible = bool(self._visible_entries)
-		focused_entry = self._focused_entry()
+		self._update_detail_hint()
 		self.select_button.Enable(has_visible and not self._preview_in_progress)
 		self.clear_button.Enable(has_visible and not self._preview_in_progress)
 		self.download_button.Enable(bool(self._checked_ids) and not self._preview_in_progress)
-		self.preview_button.Enable(
-			focused_entry is not None and focused_entry.get("availableOnline", True) and not self._preview_in_progress
-		)
+		self._update_preview_button_state()
+		self._update_preview_lock_state()
 
 	def on_toggle_entry(self, event):
 		index = event.GetInt()
@@ -639,6 +804,17 @@ class CatalogVoicesPanel(wx.Panel):
 		return service.install_catalog_voice(entry, overwrite=overwrite, refresh=False)
 
 	def on_play_sample(self, event):
+		if self._preview_playing:
+			self._preview_request_id += 1
+			service.stop_preview()
+			self._preview_in_progress = False
+			self._preview_playing = False
+			self.preview_language_choice.Enable(True)
+			self.result_hint.SetLabel(
+				_format_count_hint(len(self._visible_entries), len(self._entries), len(self._checked_ids))
+			)
+			self._update_action_state()
+			return
 		entry = self._focused_entry()
 		if entry is None:
 			gui.messageBox(
@@ -655,6 +831,10 @@ class CatalogVoicesPanel(wx.Panel):
 			)
 			return
 		self._preview_in_progress = True
+		self._preview_playing = False
+		self._preview_request_id += 1
+		request_id = self._preview_request_id
+		self.preview_language_choice.Enable(False)
 		status_message = _("Generating sample for {name}. The first preview can take around a minute.").format(
 			name=entry.get("displayName", entry["id"]),
 		)
@@ -662,8 +842,25 @@ class CatalogVoicesPanel(wx.Panel):
 		ui.message(status_message)
 		self._update_action_state()
 
-		def _on_complete(error_message):
+		def _on_started():
+			if request_id != self._preview_request_id:
+				return
+			self._preview_playing = True
+			self.result_hint.SetLabel(_("Playing sample for {name}.").format(name=entry.get("displayName", entry["id"])))
+			self._update_action_state()
+
+		def _on_complete(status, error_message):
+			if request_id != self._preview_request_id:
+				return
 			self._preview_in_progress = False
+			self._preview_playing = False
+			self.preview_language_choice.Enable(True)
+			if status in ("superseded", "stopped"):
+				self.result_hint.SetLabel(
+					_format_count_hint(len(self._visible_entries), len(self._entries), len(self._checked_ids))
+				)
+				self._update_action_state()
+				return
 			if error_message:
 				self.result_hint.SetLabel(_("Sample playback failed."))
 				gui.messageBox(
@@ -677,7 +874,12 @@ class CatalogVoicesPanel(wx.Panel):
 				)
 			self._update_action_state()
 
-		service.play_catalog_voice_sample(entry, on_complete=_on_complete)
+		service.play_catalog_voice_sample(
+			entry,
+			on_complete=_on_complete,
+			preview_language=self._selected_preview_language(),
+			on_playback_started=_on_started,
+		)
 
 	def on_download_selected(self, event):
 		selected_entries = [entry for entry in self._entries if entry["id"] in self._checked_ids]
@@ -756,6 +958,1137 @@ class CatalogVoicesPanel(wx.Panel):
 			message_lines.append(_("No voice changes were applied."))
 		title = _("Voice download complete") if not failures else _("Voice download completed with issues")
 		gui.messageBox("\n".join(message_lines), title, wx.OK | wx.ICON_INFORMATION)
+
+
+class HuggingFaceSearchPanel(wx.Panel):
+	def __init__(self, parent, on_change):
+		super(HuggingFaceSearchPanel, self).__init__(parent)
+		self._on_change = on_change
+		self._entries = []
+		self._visible_entries = []
+		self._checked_ids = set()
+		self._installed_voice_ids = set()
+		self._language_options = [("", _("All languages"))]
+		self._preview_in_progress = False
+		self._preview_playing = False
+		self._preview_request_id = 0
+		self._search_generation = 0
+		self._last_payload = {}
+		self._last_query = "xtts"
+		sizer = wx.BoxSizer(wx.VERTICAL)
+		sizer.Add(
+			wx.StaticText(
+				self,
+				label=_("Search Hugging Face for XTTS-compatible model repos that include playable sample audio."),
+			),
+			0,
+			wx.ALL,
+			5,
+		)
+
+		search_row = wx.BoxSizer(wx.HORIZONTAL)
+		search_row.Add(wx.StaticText(self, label=_("Query")), 0, wx.ALIGN_CENTER_VERTICAL | wx.ALL, 5)
+		self.search_text = wx.TextCtrl(self, value="xtts", style=wx.TE_PROCESS_ENTER)
+		self.search_button = wx.Button(self, label=_("Search Hugging Face"))
+		search_row.Add(self.search_text, 1, wx.EXPAND | wx.ALL, 5)
+		search_row.Add(self.search_button, 0, wx.ALL, 5)
+		sizer.Add(search_row, 0, wx.EXPAND)
+
+		filter_row = wx.BoxSizer(wx.HORIZONTAL)
+		filter_row.Add(wx.StaticText(self, label=_("Gender")), 0, wx.ALIGN_CENTER_VERTICAL | wx.ALL, 5)
+		self.gender_choice = wx.Choice(self, choices=[label for __, label in GENDER_FILTERS])
+		self.gender_choice.SetSelection(0)
+		filter_row.Add(self.gender_choice, 0, wx.ALL, 5)
+		filter_row.Add(wx.StaticText(self, label=_("Language")), 0, wx.ALIGN_CENTER_VERTICAL | wx.ALL, 5)
+		self.language_choice = wx.Choice(self, choices=[self._language_options[0][1]])
+		self.language_choice.SetSelection(0)
+		filter_row.Add(self.language_choice, 0, wx.ALL, 5)
+		self.hide_installed_checkbox = wx.CheckBox(self, label=_("Hide voices already available locally"))
+		filter_row.Add(self.hide_installed_checkbox, 0, wx.ALL | wx.ALIGN_CENTER_VERTICAL, 5)
+		sizer.Add(filter_row, 0, wx.EXPAND)
+
+		self.voice_list = wx.CheckListBox(self)
+		sizer.Add(self.voice_list, 1, wx.EXPAND | wx.ALL, 5)
+
+		self.detail_hint = wx.StaticText(self, label="")
+		sizer.Add(self.detail_hint, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM, 5)
+		self.result_hint = wx.StaticText(self, label="")
+		sizer.Add(self.result_hint, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM, 5)
+		self.empty_hint = wx.StaticText(self, label=_("Press Search Hugging Face to load results."))
+		sizer.Add(self.empty_hint, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM, 5)
+		self.search_hint = wx.StaticText(self, label="")
+		sizer.Add(self.search_hint, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM, 5)
+
+		preview_row = wx.BoxSizer(wx.HORIZONTAL)
+		self._preview_language_options = _preview_language_options(_("Auto (voice language)"))
+		preview_row.Add(wx.StaticText(self, label=_("Preview language")), 0, wx.ALIGN_CENTER_VERTICAL | wx.ALL, 5)
+		self.preview_language_choice = wx.Choice(
+			self,
+			choices=[label for __, label in self._preview_language_options],
+		)
+		self.preview_language_choice.SetSelection(0)
+		preview_row.Add(self.preview_language_choice, 0, wx.ALL, 5)
+		sizer.Add(preview_row, 0, wx.LEFT | wx.RIGHT, 0)
+
+		button_row = wx.BoxSizer(wx.HORIZONTAL)
+		self.select_button = wx.Button(self, label=_("Select visible"))
+		self.clear_button = wx.Button(self, label=_("Clear visible"))
+		self.preview_button = wx.Button(self, label=_("Play sample"))
+		self.install_button = wx.Button(self, label=_("Install selected voices"))
+		button_row.Add(self.select_button, 0, wx.ALL, 5)
+		button_row.Add(self.clear_button, 0, wx.ALL, 5)
+		button_row.Add(self.preview_button, 0, wx.ALL, 5)
+		button_row.Add(self.install_button, 0, wx.ALL, 5)
+		sizer.Add(button_row, 0, wx.ALL, 0)
+		self.SetSizer(sizer)
+
+		self.Bind(wx.EVT_BUTTON, lambda evt: self.search_entries(), self.search_button)
+		self.Bind(wx.EVT_TEXT_ENTER, lambda evt: self.search_entries(), self.search_text)
+		self.Bind(wx.EVT_CHOICE, lambda evt: self._apply_filters(), self.gender_choice)
+		self.Bind(wx.EVT_CHOICE, lambda evt: self._apply_filters(), self.language_choice)
+		self.Bind(wx.EVT_CHECKBOX, lambda evt: self._apply_filters(), self.hide_installed_checkbox)
+		self.Bind(wx.EVT_LISTBOX, lambda evt: self._update_action_state(), self.voice_list)
+		self.Bind(wx.EVT_CHECKLISTBOX, self.on_toggle_entry, self.voice_list)
+		self.Bind(wx.EVT_BUTTON, lambda evt: self.on_select_visible(), self.select_button)
+		self.Bind(wx.EVT_BUTTON, lambda evt: self.on_clear_visible(), self.clear_button)
+		self.Bind(wx.EVT_BUTTON, self.on_play_sample, self.preview_button)
+		self.Bind(wx.EVT_BUTTON, self.on_install_selected, self.install_button)
+		service.prepare_preview_runtime_async()
+		self.search_entries(initial=True)
+
+	def _update_preview_button_state(self):
+		focused_entry = self._focused_entry()
+		self.preview_button.SetLabel(_("Stop") if self._preview_playing else _("Play sample"))
+		can_start = focused_entry is not None and not self._preview_in_progress
+		self.preview_button.Enable(self._preview_playing or can_start)
+
+	def _update_preview_lock_state(self):
+		locked = self._preview_in_progress
+		self.search_text.Enable(not locked)
+		self.search_button.Enable(not locked)
+		self.gender_choice.Enable(not locked)
+		self.language_choice.Enable(not locked)
+		self.hide_installed_checkbox.Enable(not locked)
+
+	def _format_entry(self, entry):
+		language_label = entry.get("languageLabel") or _("Unknown language")
+		license_label = entry.get("license") or _("unknown")
+		downloads = int(entry.get("downloads") or 0)
+		return _("{name} | {language} | {license} | {downloads} downloads").format(
+			name=entry.get("displayName", entry["id"]),
+			language=language_label,
+			license=license_label,
+			downloads=downloads,
+		)
+
+	def _focused_entry(self):
+		index = self.voice_list.GetSelection()
+		if index == wx.NOT_FOUND or index >= len(self._visible_entries):
+			return None
+		return self._visible_entries[index]
+
+	def _selected_gender_key(self):
+		index = self.gender_choice.GetSelection()
+		if index == wx.NOT_FOUND:
+			return "all"
+		return GENDER_FILTERS[index][0]
+
+	def _selected_language_key(self):
+		index = self.language_choice.GetSelection()
+		if index == wx.NOT_FOUND or index >= len(self._language_options):
+			return ""
+		return self._language_options[index][0]
+
+	def _selected_preview_language(self):
+		index = self.preview_language_choice.GetSelection()
+		if index == wx.NOT_FOUND or index >= len(self._preview_language_options):
+			return None
+		return self._preview_language_options[index][0] or None
+
+	def _update_language_choices(self):
+		current_key = self._selected_language_key()
+		options = [("", _("All languages"))]
+		seen = set()
+		for entry in self._entries:
+			key = entry.get("language", "") or ""
+			label = entry.get("languageLabel") or key or _("Unknown language")
+			if key in seen:
+				continue
+			seen.add(key)
+			options.append((key, label))
+		options.sort(key=lambda item: (item[0] != "", item[1].lower()))
+		self._language_options = options
+		self.language_choice.SetItems([label for __, label in options])
+		target_index = 0
+		for index, item in enumerate(options):
+			if item[0] == current_key:
+				target_index = index
+				break
+		self.language_choice.SetSelection(target_index)
+
+	def _set_loading_state(self, is_loading, message=None):
+		self.search_text.Enable(not is_loading)
+		self.search_button.Enable(not is_loading)
+		self.gender_choice.Enable(not is_loading)
+		self.language_choice.Enable(not is_loading)
+		self.hide_installed_checkbox.Enable(not is_loading)
+		self.voice_list.Enable(not is_loading)
+		self.preview_language_choice.Enable(not is_loading and not self._preview_in_progress)
+		if is_loading:
+			self.result_hint.SetLabel(message or _("Searching Hugging Face..."))
+			self.empty_hint.SetLabel("")
+			self.select_button.Enable(False)
+			self.clear_button.Enable(False)
+			self.preview_button.Enable(False)
+			self.install_button.Enable(False)
+		else:
+			self._update_action_state()
+			self._update_preview_lock_state()
+		self.Layout()
+
+	def _refresh_inventory_state(self):
+		inventory = service.list_voice_inventory()
+		self._installed_voice_ids = {record.voice_id for record in inventory["user"]}
+		self._installed_voice_ids.update(record.voice_id for record in inventory["builtin"])
+
+	def refresh_inventory_state(self):
+		try:
+			self._refresh_inventory_state()
+		except Exception:
+			log.exception("MaxLogic XTTS v2 Hugging Face inventory refresh failed")
+			return
+		self._apply_filters()
+
+	def _finish_search(self, generation, entries=None, payload=None, error_message=None):
+		if generation != self._search_generation:
+			return
+		if error_message:
+			self.search_hint.SetLabel(_("Hugging Face results could not be loaded right now."))
+			self.result_hint.SetLabel("")
+			self.detail_hint.SetLabel("")
+			self.empty_hint.SetLabel(_("Try a different query or try again in a moment."))
+			self._entries = []
+			self._visible_entries = []
+			self.voice_list.SetItems([])
+			self._set_loading_state(False)
+			return
+		self._entries = entries or []
+		self._checked_ids.intersection_update({entry["id"] for entry in self._entries})
+		self._last_payload = payload or {}
+		try:
+			self._refresh_inventory_state()
+		except Exception:
+			log.exception("MaxLogic XTTS v2 Hugging Face search inventory refresh failed")
+			self._installed_voice_ids = set()
+		self._update_language_choices()
+		self.search_hint.SetLabel(_format_huggingface_hint(self._last_payload))
+		self._set_loading_state(False)
+		self._apply_filters()
+
+	def search_entries(self, initial=False):
+		query = self.search_text.GetValue().strip() or "xtts"
+		self._last_query = query
+		self._search_generation += 1
+		generation = self._search_generation
+		self._set_loading_state(True, _("Searching Hugging Face..."))
+		if not initial:
+			self.search_hint.SetLabel(_("Searching Hugging Face for '{query}'...").format(query=query))
+
+		def _worker():
+			try:
+				entries, payload = service.search_huggingface_voices(query=query, limit=20)
+			except Exception as error:
+				wx.CallAfter(self._finish_search, generation, None, None, str(error))
+				return
+			wx.CallAfter(self._finish_search, generation, entries, payload, None)
+
+		thread = threading.Thread(
+			target=_worker,
+			name="MaxLogicXTTSV2HuggingFaceSearch",
+			daemon=True,
+		)
+		thread.start()
+
+	def _apply_filters(self):
+		gender_key = self._selected_gender_key()
+		language_key = self._selected_language_key()
+		hide_installed = self.hide_installed_checkbox.GetValue()
+		visible_entries = []
+		for entry in self._entries:
+			if hide_installed and entry.get("installVoiceId") in self._installed_voice_ids:
+				continue
+			if gender_key != "all" and entry.get("gender", "unknown") != gender_key:
+				continue
+			if language_key and entry.get("language", "") != language_key:
+				continue
+			visible_entries.append(entry)
+		self._visible_entries = visible_entries
+		self.voice_list.SetItems([self._format_entry(entry) for entry in visible_entries])
+		for index, entry in enumerate(visible_entries):
+			self.voice_list.Check(index, entry["id"] in self._checked_ids)
+		self.result_hint.SetLabel(
+			_format_count_hint(len(self._visible_entries), len(self._entries), len(self._checked_ids))
+			if self._entries
+			else _("No Hugging Face results loaded yet.")
+		)
+		if self._entries and not self._visible_entries:
+			self.empty_hint.SetLabel(_("No voices match the current filters."))
+		elif not self._entries:
+			self.empty_hint.SetLabel(_("Press Search Hugging Face to load results."))
+		else:
+			self.empty_hint.SetLabel("")
+		self._update_detail_hint()
+		self._update_action_state()
+		self.Layout()
+
+	def _update_detail_hint(self):
+		entry = self._focused_entry()
+		if entry is None:
+			self.detail_hint.SetLabel("")
+			return
+		self.detail_hint.SetLabel(
+			_("Repo: {repo} | Sample: {sample} | License: {license} | Likes: {likes} | Downloads: {downloads}").format(
+				repo=entry.get("hfModelId", entry["id"]),
+				sample=entry.get("hfSamplePath") or entry.get("sourceFile") or _("unknown"),
+				license=entry.get("license") or _("unknown"),
+				likes=int(entry.get("likes") or 0),
+				downloads=int(entry.get("downloads") or 0),
+			)
+		)
+
+	def _update_action_state(self):
+		has_visible = bool(self._visible_entries)
+		self.select_button.Enable(has_visible and not self._preview_in_progress)
+		self.clear_button.Enable(has_visible and not self._preview_in_progress)
+		self.install_button.Enable(bool(self._checked_ids) and not self._preview_in_progress)
+		self._update_preview_button_state()
+		self._update_preview_lock_state()
+
+	def on_toggle_entry(self, event):
+		index = event.GetInt()
+		if index == wx.NOT_FOUND or index >= len(self._visible_entries):
+			return
+		entry = self._visible_entries[index]
+		if self.voice_list.IsChecked(index):
+			self._checked_ids.add(entry["id"])
+		else:
+			self._checked_ids.discard(entry["id"])
+		self.result_hint.SetLabel(
+			_format_count_hint(len(self._visible_entries), len(self._entries), len(self._checked_ids))
+		)
+		self._update_action_state()
+
+	def on_select_visible(self):
+		for entry in self._visible_entries:
+			self._checked_ids.add(entry["id"])
+		self._apply_filters()
+
+	def on_clear_visible(self):
+		for entry in self._visible_entries:
+			self._checked_ids.discard(entry["id"])
+		self._apply_filters()
+
+	def _run_busy(self, message, callback):
+		busy = wx.BusyInfo(message, parent=self)
+		try:
+			return callback()
+		finally:
+			del busy
+
+	def _install_entry(self, entry, overwrite):
+		return service.install_huggingface_voice(entry, overwrite=overwrite, refresh=False)
+
+	def on_play_sample(self, event):
+		if self._preview_playing:
+			self._preview_request_id += 1
+			service.stop_preview()
+			self._preview_in_progress = False
+			self._preview_playing = False
+			self.preview_language_choice.Enable(True)
+			self.result_hint.SetLabel(
+				_format_count_hint(len(self._visible_entries), len(self._entries), len(self._checked_ids))
+			)
+			self._update_action_state()
+			return
+		entry = self._focused_entry()
+		if entry is None:
+			gui.messageBox(
+				_("Select one Hugging Face voice in the list to play a sample."),
+				_("No voice selected"),
+				wx.OK | wx.ICON_INFORMATION,
+			)
+			return
+		self._preview_in_progress = True
+		self._preview_playing = False
+		self._preview_request_id += 1
+		request_id = self._preview_request_id
+		self.preview_language_choice.Enable(False)
+		status_message = _("Generating sample for {name}. The first preview can take around a minute.").format(
+			name=entry.get("displayName", entry["id"]),
+		)
+		self.result_hint.SetLabel(status_message)
+		ui.message(status_message)
+		self._update_action_state()
+
+		def _on_started():
+			if request_id != self._preview_request_id:
+				return
+			self._preview_playing = True
+			self.result_hint.SetLabel(_("Playing sample for {name}.").format(name=entry.get("displayName", entry["id"])))
+			self._update_action_state()
+
+		def _on_complete(status, error_message):
+			if request_id != self._preview_request_id:
+				return
+			self._preview_in_progress = False
+			self._preview_playing = False
+			self.preview_language_choice.Enable(True)
+			if status in ("superseded", "stopped"):
+				self.result_hint.SetLabel(
+					_format_count_hint(len(self._visible_entries), len(self._entries), len(self._checked_ids))
+				)
+				self._update_action_state()
+				return
+			if error_message:
+				self.result_hint.SetLabel(_("Sample playback failed."))
+				gui.messageBox(
+					_("Sample playback failed.\nSee NVDA's log for details.\n{error}").format(error=error_message),
+					_("Sample playback failed"),
+					wx.OK | wx.ICON_ERROR,
+				)
+			else:
+				self.result_hint.SetLabel(
+					_format_count_hint(len(self._visible_entries), len(self._entries), len(self._checked_ids))
+				)
+			self._update_action_state()
+
+		service.play_catalog_voice_sample(
+			entry,
+			on_complete=_on_complete,
+			preview_language=self._selected_preview_language(),
+			on_playback_started=_on_started,
+		)
+
+	def on_install_selected(self, event):
+		selected_entries = [entry for entry in self._entries if entry["id"] in self._checked_ids]
+		if not selected_entries:
+			return
+		installed = []
+		overwritten = []
+		duplicates = []
+		failures = []
+
+		def _initial_pass():
+			for entry in selected_entries:
+				try:
+					result = self._install_entry(entry, overwrite=False)
+				except service.DuplicateVoiceError:
+					duplicates.append(entry)
+				except Exception as error:
+					log.exception("MaxLogic XTTS v2 Hugging Face install failed", exc_info=True)
+					failures.append((entry, error))
+				else:
+					installed.extend(result["records"])
+
+		self._run_busy(_("Installing selected Hugging Face voices..."), _initial_pass)
+
+		if duplicates:
+			response = gui.messageBox(
+				_("{count} selected Hugging Face voices are already installed. Overwrite the user-managed copies?").format(
+					count=len(duplicates)
+				),
+				_("Overwrite installed voices?"),
+				wx.YES_NO | wx.ICON_WARNING,
+			)
+			if response == wx.YES:
+				def _overwrite_pass():
+					for entry in duplicates:
+						try:
+							result = self._install_entry(entry, overwrite=True)
+						except Exception as error:
+							log.exception("MaxLogic XTTS v2 Hugging Face overwrite failed", exc_info=True)
+							failures.append((entry, error))
+						else:
+							overwritten.extend(result["records"])
+
+				self._run_busy(_("Overwriting selected Hugging Face voices..."), _overwrite_pass)
+
+		refresh = service.refresh_active_synth(
+			reason="huggingface-batch-install",
+			preferred_voice=(installed or overwritten)[0].voice_id if (installed or overwritten) else None,
+		)
+		self._checked_ids.clear()
+		self._on_change()
+
+		message_lines = []
+		if installed:
+			message_lines.append(_("Installed {count} voices.").format(count=len(installed)))
+		if overwritten:
+			message_lines.append(_("Overwrote {count} voices.").format(count=len(overwritten)))
+		if duplicates and not overwritten:
+			message_lines.append(_("Skipped {count} already-installed voices.").format(count=len(duplicates)))
+		if failures:
+			message_lines.append(_("Failed to install {count} voices. See NVDA's log for details.").format(count=len(failures)))
+		if refresh.get("restartRequired"):
+			message_lines.append(_("Restart NVDA to refresh the current synth."))
+		if not message_lines:
+			message_lines.append(_("No voice changes were applied."))
+		title = _("Voice installation complete") if not failures else _("Voice installation completed with issues")
+		gui.messageBox("\n".join(message_lines), title, wx.OK | wx.ICON_INFORMATION)
+
+
+class ExtractSamplePanel(wx.Panel):
+	_AUDIO_WILDCARD = (
+		_("Audio files (*.wav;*.mp3;*.flac;*.ogg;*.m4a;*.aac)|*.wav;*.mp3;*.flac;*.ogg;*.m4a;*.aac")
+	)
+
+	def __init__(self, parent, on_change):
+		super(ExtractSamplePanel, self).__init__(parent)
+		self._on_change = on_change
+		self._source_path = None
+		self._source_info = None
+		self._transport_ready = False
+		self._playback_stop_at_ms = None
+		self._save_busy = None
+		self._busy = False
+		self._media = None
+		self._media_loaded = False
+		self._fallback_playing = False
+		self._fallback_generation = 0
+		self._fallback_position_ms = 0
+		self._fallback_start_ms = 0
+		self._fallback_started_at = None
+		self._timer = wx.Timer(self)
+		if wxmedia is not None:
+			try:
+				self._media = wxmedia.MediaCtrl(self)
+				self._media.Hide()
+			except Exception:
+				self._media = None
+		self._build_ui()
+		self.Bind(wx.EVT_TIMER, self.on_timer, self._timer)
+		self._set_transport_ready(False)
+		self._update_marker_summary()
+		self.status_label.SetLabel(_("Choose a source recording to begin extracting a sample."))
+
+	def _build_ui(self):
+		main_sizer = wx.BoxSizer(wx.VERTICAL)
+
+		source_box = wx.StaticBoxSizer(wx.VERTICAL, self, _("Source audio"))
+		source_row = wx.BoxSizer(wx.HORIZONTAL)
+		self.source_path_ctrl = wx.TextCtrl(self, style=wx.TE_READONLY)
+		self.browse_button = wx.Button(self, label=_("Browse..."))
+		source_row.Add(self.source_path_ctrl, 1, wx.ALL | wx.EXPAND, 5)
+		source_row.Add(self.browse_button, 0, wx.ALL, 5)
+		source_box.Add(source_row, 0, wx.EXPAND)
+		self.source_summary = wx.StaticText(self, label=_("No source file selected."))
+		source_box.Add(self.source_summary, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM, 5)
+		main_sizer.Add(source_box, 0, wx.EXPAND | wx.ALL, 5)
+
+		transport_box = wx.StaticBoxSizer(wx.VERTICAL, self, _("Transport"))
+		position_row = wx.BoxSizer(wx.HORIZONTAL)
+		position_row.Add(wx.StaticText(self, label=_("Current position")), 0, wx.ALIGN_CENTER_VERTICAL | wx.ALL, 5)
+		self.current_position_ctrl = wx.TextCtrl(self, style=wx.TE_READONLY)
+		self.current_position_ctrl.SetValue(_format_timecode(0))
+		position_row.Add(self.current_position_ctrl, 0, wx.ALL, 5)
+		position_row.Add(wx.StaticText(self, label=_("Playback speed")), 0, wx.ALIGN_CENTER_VERTICAL | wx.ALL, 5)
+		self.speed_choice = wx.Choice(self, choices=["0.5x", "0.75x", "1.0x", "1.25x"])
+		self.speed_choice.SetStringSelection("1.0x")
+		position_row.Add(self.speed_choice, 0, wx.ALL, 5)
+		transport_box.Add(position_row, 0, wx.EXPAND)
+
+		button_row_1 = wx.BoxSizer(wx.HORIZONTAL)
+		self.play_pause_button = wx.Button(self, label=_("Play"))
+		self.stop_button = wx.Button(self, label=_("Stop"))
+		self.back_5_button = wx.Button(self, label=_("Rewind 5s"))
+		self.forward_5_button = wx.Button(self, label=_("Forward 5s"))
+		for control in (self.play_pause_button, self.stop_button, self.back_5_button, self.forward_5_button):
+			button_row_1.Add(control, 0, wx.ALL, 5)
+		transport_box.Add(button_row_1, 0, wx.EXPAND)
+
+		button_row_2 = wx.BoxSizer(wx.HORIZONTAL)
+		self.back_30_button = wx.Button(self, label=_("Rewind 30s"))
+		self.forward_30_button = wx.Button(self, label=_("Forward 30s"))
+		for control in (self.back_30_button, self.forward_30_button):
+			button_row_2.Add(control, 0, wx.ALL, 5)
+		transport_box.Add(button_row_2, 0, wx.EXPAND)
+		main_sizer.Add(transport_box, 0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, 5)
+
+		marker_box = wx.StaticBoxSizer(wx.VERTICAL, self, _("Markers"))
+		start_row = wx.BoxSizer(wx.HORIZONTAL)
+		start_row.Add(wx.StaticText(self, label=_("Start marker")), 0, wx.ALIGN_CENTER_VERTICAL | wx.ALL, 5)
+		self.start_marker_ctrl = wx.TextCtrl(self)
+		self.set_start_button = wx.Button(self, label=_("Set start at current position"))
+		self.play_before_start_button = wx.Button(self, label=_("Play 3s Before Start"))
+		start_row.Add(self.start_marker_ctrl, 0, wx.ALL, 5)
+		start_row.Add(self.set_start_button, 0, wx.ALL, 5)
+		start_row.Add(self.play_before_start_button, 0, wx.ALL, 5)
+		marker_box.Add(start_row, 0, wx.EXPAND)
+
+		end_row = wx.BoxSizer(wx.HORIZONTAL)
+		end_row.Add(wx.StaticText(self, label=_("End marker")), 0, wx.ALIGN_CENTER_VERTICAL | wx.ALL, 5)
+		self.end_marker_ctrl = wx.TextCtrl(self)
+		self.set_end_button = wx.Button(self, label=_("Set end at current position"))
+		self.play_after_end_button = wx.Button(self, label=_("Play 3s After End"))
+		end_row.Add(self.end_marker_ctrl, 0, wx.ALL, 5)
+		end_row.Add(self.set_end_button, 0, wx.ALL, 5)
+		end_row.Add(self.play_after_end_button, 0, wx.ALL, 5)
+		marker_box.Add(end_row, 0, wx.EXPAND)
+
+		selection_row = wx.BoxSizer(wx.HORIZONTAL)
+		selection_row.Add(wx.StaticText(self, label=_("Selection length")), 0, wx.ALIGN_CENTER_VERTICAL | wx.ALL, 5)
+		self.selection_length_ctrl = wx.TextCtrl(self, style=wx.TE_READONLY)
+		selection_row.Add(self.selection_length_ctrl, 0, wx.ALL, 5)
+		self.preview_selection_button = wx.Button(self, label=_("Preview selection"))
+		selection_row.Add(self.preview_selection_button, 0, wx.ALL, 5)
+		marker_box.Add(selection_row, 0, wx.EXPAND)
+		main_sizer.Add(marker_box, 0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, 5)
+
+		save_box = wx.StaticBoxSizer(wx.VERTICAL, self, _("Save as XTTS profile"))
+		voice_row = wx.BoxSizer(wx.HORIZONTAL)
+		voice_row.Add(wx.StaticText(self, label=_("Voice name")), 0, wx.ALIGN_CENTER_VERTICAL | wx.ALL, 5)
+		self.voice_name_ctrl = wx.TextCtrl(self)
+		voice_row.Add(self.voice_name_ctrl, 1, wx.ALL | wx.EXPAND, 5)
+		save_box.Add(voice_row, 0, wx.EXPAND)
+		self.normalize_checkbox = wx.CheckBox(self, label=_("Normalize sample volume"))
+		self.normalize_checkbox.SetValue(True)
+		self.trim_checkbox = wx.CheckBox(self, label=_("Trim silence at start and end"))
+		self.trim_checkbox.SetValue(True)
+		save_box.Add(self.normalize_checkbox, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM, 5)
+		save_box.Add(self.trim_checkbox, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM, 5)
+		self.recommendation_label = wx.StaticText(
+			self,
+			label=_("Best results: 10 to 30 seconds of clean speech with no music or effects."),
+		)
+		save_box.Add(self.recommendation_label, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM, 5)
+		self.save_button = wx.Button(self, label=_("Save as XTTS profile"))
+		save_box.Add(self.save_button, 0, wx.ALL, 5)
+		main_sizer.Add(save_box, 0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, 5)
+
+		self.status_label = wx.StaticText(self, label="")
+		main_sizer.Add(self.status_label, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM, 8)
+		self.SetSizer(main_sizer)
+
+		self.Bind(wx.EVT_BUTTON, self.on_browse, self.browse_button)
+		self.Bind(wx.EVT_BUTTON, self.on_play_pause, self.play_pause_button)
+		self.Bind(wx.EVT_BUTTON, self.on_stop, self.stop_button)
+		self.Bind(wx.EVT_BUTTON, lambda evt: self._seek_relative(-5000), self.back_5_button)
+		self.Bind(wx.EVT_BUTTON, lambda evt: self._seek_relative(5000), self.forward_5_button)
+		self.Bind(wx.EVT_BUTTON, lambda evt: self._seek_relative(-30000), self.back_30_button)
+		self.Bind(wx.EVT_BUTTON, lambda evt: self._seek_relative(30000), self.forward_30_button)
+		self.Bind(wx.EVT_BUTTON, self.on_set_start, self.set_start_button)
+		self.Bind(wx.EVT_BUTTON, self.on_set_end, self.set_end_button)
+		self.Bind(wx.EVT_BUTTON, self.on_play_before_start, self.play_before_start_button)
+		self.Bind(wx.EVT_BUTTON, self.on_play_after_end, self.play_after_end_button)
+		self.Bind(wx.EVT_BUTTON, self.on_preview_selection, self.preview_selection_button)
+		self.Bind(wx.EVT_BUTTON, self.on_save_profile, self.save_button)
+		self.Bind(wx.EVT_TEXT, lambda evt: self._update_marker_summary(), self.start_marker_ctrl)
+		self.Bind(wx.EVT_TEXT, lambda evt: self._update_marker_summary(), self.end_marker_ctrl)
+		self.Bind(wx.EVT_CHOICE, lambda evt: self._apply_speed(), self.speed_choice)
+
+	def _set_transport_ready(self, ready):
+		self._transport_ready = bool(ready)
+		self._update_transport_controls()
+
+	def _update_transport_controls(self):
+		enabled = self._transport_ready and self._save_busy is None and not self._busy
+		for control in (
+			self.play_pause_button,
+			self.stop_button,
+			self.back_5_button,
+			self.forward_5_button,
+			self.back_30_button,
+			self.forward_30_button,
+			self.set_start_button,
+			self.set_end_button,
+			self.play_before_start_button,
+			self.play_after_end_button,
+			self.preview_selection_button,
+		):
+			control.Enable(enabled)
+		self.speed_choice.Enable(enabled and self._media_loaded)
+		self.save_button.Enable((self._source_info is not None) and self._save_busy is None and not self._busy)
+
+	def _set_busy(self, is_busy, message=None):
+		self._busy = bool(is_busy)
+		for control in (
+			self.browse_button,
+			self.source_path_ctrl,
+			self.start_marker_ctrl,
+			self.end_marker_ctrl,
+			self.voice_name_ctrl,
+			self.normalize_checkbox,
+			self.trim_checkbox,
+		):
+			control.Enable(not is_busy)
+		self._update_transport_controls()
+		if message:
+			self.status_label.SetLabel(message)
+
+	def _apply_speed(self):
+		if self._media is None or not self._media_loaded:
+			return
+		try:
+			value = self.speed_choice.GetStringSelection().rstrip("x")
+			self._media.SetPlaybackRate(float(value or "1.0"))
+		except Exception:
+			pass
+
+	def _selected_speed(self):
+		if not self._media_loaded:
+			return 1.0
+		try:
+			value = self.speed_choice.GetStringSelection().rstrip("x")
+			return max(0.1, float(value or "1.0"))
+		except Exception:
+			return 1.0
+
+	def _current_duration_ms(self):
+		if self._source_info is None:
+			return 0
+		return int(self._source_info.get("durationMs") or 0)
+
+	def _current_position_ms(self):
+		if not self._media_loaded and self._fallback_playing:
+			if self._fallback_started_at is None:
+				return max(0, min(int(self._fallback_position_ms), self._current_duration_ms()))
+			elapsed_ms = int(round((time.monotonic() - self._fallback_started_at) * 1000.0 * self._selected_speed()))
+			position = self._fallback_start_ms + elapsed_ms
+			stop_at_ms = self._playback_stop_at_ms
+			if stop_at_ms is not None:
+				position = min(position, int(stop_at_ms))
+			return max(0, min(position, self._current_duration_ms()))
+		if not self._media_loaded:
+			return max(0, min(int(self._fallback_position_ms), self._current_duration_ms()))
+		if self._media is None or not self._media_loaded:
+			return 0
+		try:
+			position = int(self._media.Tell())
+		except Exception:
+			return 0
+		return max(0, position)
+
+	def _seek_absolute(self, position_ms):
+		target = max(0, min(int(position_ms), self._current_duration_ms()))
+		if self._media is None or not self._media_loaded:
+			was_playing = self._fallback_playing
+			stop_at_ms = self._playback_stop_at_ms
+			self._stop_playback(reset_stop_at=False)
+			self._fallback_position_ms = target
+			self.current_position_ctrl.SetValue(_format_timecode(target))
+			if was_playing:
+				self._start_playback(start_ms=target, stop_at_ms=stop_at_ms)
+			return
+		try:
+			self._media.Seek(target)
+		except Exception:
+			return
+		self.current_position_ctrl.SetValue(_format_timecode(target))
+
+	def _seek_relative(self, delta_ms):
+		if not self._transport_ready:
+			return
+		target = self._current_position_ms() + int(delta_ms)
+		self._seek_absolute(target)
+		ui.message(_("Position {time}").format(time=_format_timecode(self._current_position_ms())))
+
+	def _playing(self):
+		if not self._media_loaded:
+			return self._fallback_playing
+		if self._media is None or not self._media_loaded or wxmedia is None:
+			return False
+		try:
+			return self._media.GetState() == wxmedia.MEDIASTATE_PLAYING
+		except Exception:
+			return False
+
+	def _paused(self):
+		if self._media is None or not self._media_loaded or wxmedia is None:
+			return False
+		try:
+			return self._media.GetState() == wxmedia.MEDIASTATE_PAUSED
+		except Exception:
+			return False
+
+	def _start_timer(self):
+		if not self._timer.IsRunning():
+			self._timer.Start(200)
+
+	def _stop_timer(self):
+		if self._timer.IsRunning():
+			self._timer.Stop()
+
+	def _stop_playback(self, reset_stop_at=True):
+		if self._media is not None and self._media_loaded:
+			try:
+				self._media.Stop()
+			except Exception:
+				pass
+		elif self._fallback_playing:
+			self._fallback_position_ms = self._current_position_ms()
+			self._fallback_generation += 1
+			service.stop_preview()
+			self._fallback_playing = False
+			self._fallback_started_at = None
+		if reset_stop_at:
+			self._playback_stop_at_ms = None
+		self.play_pause_button.SetLabel(_("Play"))
+		self._stop_timer()
+
+	def _start_playback(self, start_ms=None, stop_at_ms=None):
+		if not self._transport_ready:
+			return
+		if start_ms is not None:
+			self._seek_absolute(start_ms)
+		self._playback_stop_at_ms = stop_at_ms
+		self._apply_speed()
+		if self._media is None or not self._media_loaded:
+			self._start_fallback_playback(start_ms=start_ms, stop_at_ms=stop_at_ms)
+			return
+		try:
+			self._media.Play()
+		except Exception as error:
+			gui.messageBox(
+				_("Playback failed.\n{error}").format(error=error),
+				_("Playback failed"),
+				wx.OK | wx.ICON_ERROR,
+			)
+			return
+		self.play_pause_button.SetLabel(_("Pause"))
+		self._start_timer()
+
+	def _start_fallback_playback(self, start_ms=None, stop_at_ms=None):
+		if self._source_path is None:
+			return
+		start_ms = self._current_position_ms() if start_ms is None else int(start_ms)
+		end_ms = self._current_duration_ms() if stop_at_ms is None else int(stop_at_ms)
+		start_ms = max(0, min(start_ms, self._current_duration_ms()))
+		end_ms = max(0, min(end_ms, self._current_duration_ms()))
+		if end_ms <= start_ms:
+			self._fallback_position_ms = start_ms
+			self.current_position_ctrl.SetValue(_format_timecode(start_ms))
+			return
+		self._fallback_generation += 1
+		generation = self._fallback_generation
+		self._fallback_start_ms = start_ms
+		self._fallback_position_ms = start_ms
+		self._fallback_started_at = None
+		self._fallback_playing = True
+		self._playback_stop_at_ms = stop_at_ms
+		self.play_pause_button.SetLabel(_("Stop"))
+		self._start_timer()
+
+		def _on_started():
+			if generation != self._fallback_generation:
+				return
+			self._fallback_started_at = time.monotonic()
+
+		def _on_complete(status, error_message):
+			if generation != self._fallback_generation:
+				return
+			self._fallback_playing = False
+			self._fallback_started_at = None
+			if status in ("completed", "superseded", "stopped"):
+				self._fallback_position_ms = end_ms if status == "completed" else self._current_position_ms()
+				self.current_position_ctrl.SetValue(_format_timecode(self._fallback_position_ms))
+				self.play_pause_button.SetLabel(_("Play"))
+				self._stop_timer()
+				return
+			self.play_pause_button.SetLabel(_("Play"))
+			self._stop_timer()
+			gui.messageBox(
+				_("Playback failed.\n{error}").format(error=error_message or _("Unknown error")),
+				_("Playback failed"),
+				wx.OK | wx.ICON_ERROR,
+			)
+
+		service.play_audio_source_segment(
+			self._source_path,
+			start_ms=start_ms,
+			end_ms=end_ms,
+			on_complete=_on_complete,
+			on_playback_started=_on_started,
+		)
+
+	def _validate_selection(self):
+		if self._source_info is None:
+			raise ValueError(_("Choose a source file first."))
+		start_ms = _parse_timecode(self.start_marker_ctrl.GetValue())
+		end_ms = _parse_timecode(self.end_marker_ctrl.GetValue())
+		duration_ms = self._current_duration_ms()
+		if duration_ms and end_ms > duration_ms:
+			raise ValueError(_("End marker cannot be beyond the file duration."))
+		if end_ms <= start_ms:
+			raise ValueError(_("End marker must be after start marker."))
+		return start_ms, end_ms, end_ms - start_ms
+
+	def _update_marker_summary(self):
+		try:
+			__start_ms, __end_ms, length_ms = self._validate_selection()
+		except Exception:
+			self.selection_length_ctrl.SetValue(_("Not ready"))
+			return
+		self.selection_length_ctrl.SetValue(_format_timecode(length_ms))
+
+	def _load_media_source(self, path):
+		self._stop_playback()
+		self._media_loaded = False
+		if self._media is None:
+			return False
+		try:
+			loaded = bool(self._media.Load(path))
+		except Exception:
+			return False
+		if loaded:
+			self._media_loaded = True
+			self._apply_speed()
+		return loaded
+
+	def _finish_source_load(self, path, source_info=None, error_message=None):
+		self._source_path = path if error_message is None else None
+		self._source_info = source_info
+		if error_message:
+			self.source_summary.SetLabel(_("Unable to read audio metadata right now."))
+			self.status_label.SetLabel(_("Source load failed."))
+			self._set_transport_ready(False)
+			gui.messageBox(
+				_("Could not open the source audio.\nSee NVDA's log for details.\n{error}").format(error=error_message),
+				_("Source load failed"),
+				wx.OK | wx.ICON_ERROR,
+			)
+			return
+		self.source_path_ctrl.SetValue(path)
+		loaded_in_transport = self._load_media_source(path)
+		self.source_summary.SetLabel(
+			_("{duration} | {sampleRate} Hz | {channels} channel(s) | {format}/{subtype}").format(
+				duration=_format_timecode(source_info.get("durationMs") or 0),
+				sampleRate=source_info.get("sampleRate") or 0,
+				channels=source_info.get("channels") or 0,
+				format=source_info.get("format") or _("Unknown"),
+				subtype=source_info.get("subtype") or _("Unknown"),
+			)
+		)
+		self.current_position_ctrl.SetValue(_format_timecode(0))
+		self._fallback_position_ms = 0
+		self.start_marker_ctrl.SetValue(_format_timecode(0))
+		default_end = min(int(source_info.get("durationMs") or 0), 30000)
+		if default_end <= 0:
+			default_end = int(source_info.get("durationMs") or 0)
+		self.end_marker_ctrl.SetValue(_format_timecode(default_end))
+		if not self.voice_name_ctrl.GetValue().strip():
+			base_name = os.path.splitext(os.path.basename(path))[0].replace("_", " ").strip()
+			self.voice_name_ctrl.SetValue(base_name)
+		self._set_transport_ready(True)
+		if loaded_in_transport:
+			self.status_label.SetLabel(_("Source ready. Set markers and preview the selection."))
+		else:
+			self.status_label.SetLabel(_("Source ready. Using fallback playback because the system media control could not load this file."))
+		self._update_marker_summary()
+
+	def on_browse(self, event):
+		dialog = wx.FileDialog(
+			parent=gui.mainFrame,
+			message=_("Choose a source recording"),
+			wildcard=self._AUDIO_WILDCARD,
+			style=wx.FD_OPEN | wx.FD_FILE_MUST_EXIST,
+		)
+		gui.mainFrame.prePopup()
+		try:
+			result_code = dialog.ShowModal()
+		finally:
+			gui.mainFrame.postPopup()
+		if result_code != wx.ID_OK:
+			return
+		path = dialog.GetPath().strip()
+		if not path:
+			return
+		self._set_busy(True, _("Loading source audio..."))
+
+		def _worker():
+			try:
+				source_info = service.probe_audio_source(path)
+			except Exception as error:
+				log.exception("MaxLogic XTTS v2 source probe failed", exc_info=True)
+				wx.CallAfter(self._set_busy, False)
+				wx.CallAfter(self._finish_source_load, path, None, str(error))
+				return
+			wx.CallAfter(self._set_busy, False)
+			wx.CallAfter(self._finish_source_load, path, source_info, None)
+
+		thread = threading.Thread(target=_worker, name="MaxLogicXTTSV2SourceProbe", daemon=True)
+		thread.start()
+
+	def on_play_pause(self, event):
+		if not self._transport_ready:
+			return
+		if self._playing():
+			if self._media is not None and self._media_loaded:
+				try:
+					self._media.Pause()
+				except Exception:
+					return
+				self.play_pause_button.SetLabel(_("Play"))
+				self._stop_timer()
+			else:
+				self._stop_playback(reset_stop_at=True)
+			return
+		self._start_playback(start_ms=None, stop_at_ms=None)
+
+	def on_stop(self, event):
+		self._stop_playback(reset_stop_at=True)
+		self._seek_absolute(0)
+
+	def on_timer(self, event):
+		position_ms = self._current_position_ms()
+		self.current_position_ctrl.SetValue(_format_timecode(position_ms))
+		stop_at_ms = self._playback_stop_at_ms
+		if stop_at_ms is not None and position_ms >= stop_at_ms:
+			self._stop_playback(reset_stop_at=True)
+			self._seek_absolute(stop_at_ms)
+			return
+		if not self._playing():
+			self.play_pause_button.SetLabel(_("Play"))
+			self._stop_timer()
+
+	def on_set_start(self, event):
+		position_ms = self._current_position_ms()
+		self.start_marker_ctrl.SetValue(_format_timecode(position_ms))
+		self._update_marker_summary()
+		ui.message(_("Start marker set to {time}").format(time=_format_timecode(position_ms)))
+
+	def on_set_end(self, event):
+		position_ms = self._current_position_ms()
+		self.end_marker_ctrl.SetValue(_format_timecode(position_ms))
+		self._update_marker_summary()
+		ui.message(_("End marker set to {time}").format(time=_format_timecode(position_ms)))
+
+	def on_play_before_start(self, event):
+		try:
+			start_ms = _parse_timecode(self.start_marker_ctrl.GetValue())
+		except Exception as error:
+			gui.messageBox(str(error), _("Invalid start marker"), wx.OK | wx.ICON_WARNING)
+			return
+		self._start_playback(start_ms=max(0, start_ms - 3000), stop_at_ms=start_ms)
+
+	def on_play_after_end(self, event):
+		try:
+			end_ms = _parse_timecode(self.end_marker_ctrl.GetValue())
+		except Exception as error:
+			gui.messageBox(str(error), _("Invalid end marker"), wx.OK | wx.ICON_WARNING)
+			return
+		self._start_playback(start_ms=end_ms, stop_at_ms=min(self._current_duration_ms(), end_ms + 3000))
+
+	def on_preview_selection(self, event):
+		try:
+			start_ms, end_ms, __length_ms = self._validate_selection()
+		except Exception as error:
+			gui.messageBox(str(error), _("Selection not ready"), wx.OK | wx.ICON_WARNING)
+			return
+		self._start_playback(start_ms=start_ms, stop_at_ms=end_ms)
+
+	def _selection_warning(self, length_ms):
+		if 10000 <= length_ms <= 30000:
+			return True
+		response = gui.messageBox(
+			_(
+				"This selection is {duration}. XTTS usually works best with about 10 to 30 seconds of clean speech.\nDo you want to continue?"
+			).format(duration=_format_timecode(length_ms)),
+			_("Selection length warning"),
+			wx.YES_NO | wx.ICON_WARNING,
+		)
+		return response == wx.YES
+
+	def _finish_save(self, result=None, error_message=None, duplicate=False):
+		if self._save_busy is not None:
+			del self._save_busy
+			self._save_busy = None
+		self._set_busy(False)
+		if duplicate:
+			response = gui.messageBox(
+				_("A voice with this name already exists. Do you want to overwrite it?"),
+				_("Voice already exists"),
+				wx.YES_NO | wx.ICON_WARNING,
+			)
+			if response == wx.YES:
+				self._begin_save(overwrite=True)
+			return
+		if error_message:
+			gui.messageBox(
+				_("Saving the XTTS profile failed.\nSee NVDA's log for details.\n{error}").format(error=error_message),
+				_("Save failed"),
+				wx.OK | wx.ICON_ERROR,
+			)
+			return
+		self.status_label.SetLabel(_("XTTS profile saved successfully."))
+		self._on_change()
+		message = _("Saved XTTS profile successfully.")
+		if result["refresh"].get("restartRequired"):
+			message += "\n" + _("Restart NVDA to refresh the current synth.")
+		gui.messageBox(message, _("Profile saved"), wx.OK | wx.ICON_INFORMATION)
+
+	def _begin_save(self, overwrite=False):
+		try:
+			start_ms, end_ms, length_ms = self._validate_selection()
+		except Exception as error:
+			gui.messageBox(str(error), _("Selection not ready"), wx.OK | wx.ICON_WARNING)
+			return
+		voice_name = self.voice_name_ctrl.GetValue().strip()
+		if not voice_name:
+			gui.messageBox(
+				_("Enter a voice name for the extracted XTTS profile."),
+				_("Voice name required"),
+				wx.OK | wx.ICON_INFORMATION,
+			)
+			return
+		if not self._selection_warning(length_ms):
+			return
+		self._save_busy = wx.BusyInfo(_("Saving XTTS profile..."), parent=self)
+		self._set_busy(
+			True,
+			_("Extracting audio and saving the XTTS profile..."),
+		)
+
+		def _worker():
+			try:
+				result = service.extract_sample_to_voice(
+					self._source_path,
+					voice_name=voice_name,
+					start_ms=start_ms,
+					end_ms=end_ms,
+					normalize=self.normalize_checkbox.GetValue(),
+					trim_silence=self.trim_checkbox.GetValue(),
+					overwrite=overwrite,
+				)
+			except service.DuplicateVoiceError:
+				wx.CallAfter(self._finish_save, None, None, True)
+				return
+			except Exception as error:
+				log.exception("MaxLogic XTTS v2 sample extraction failed", exc_info=True)
+				wx.CallAfter(self._finish_save, None, str(error), False)
+				return
+			wx.CallAfter(self._finish_save, result, None, False)
+
+		thread = threading.Thread(target=_worker, name="MaxLogicXTTSV2SampleSave", daemon=True)
+		thread.start()
+
+	def on_save_profile(self, event):
+		if self._source_info is None:
+			gui.messageBox(
+				_("Choose a source recording first."),
+				_("No source selected"),
+				wx.OK | wx.ICON_INFORMATION,
+			)
+			return
+		self._begin_save(overwrite=False)
+
+	def cleanup(self):
+		self._stop_playback(reset_stop_at=True)
+		if self._media is not None:
+			try:
+				self._media.Destroy()
+			except Exception:
+				pass
+			self._media = None
 
 
 class SpeechCachePanel(wx.Panel):
@@ -1056,12 +2389,17 @@ class MaxLogicVoiceManagerDialog(wx.Dialog):
 		self._catalog_load_generation = 0
 		self.notebook = wx.Notebook(self)
 		self.installed_panel = InstalledVoicesPanel(self.notebook, on_change=self.refresh_all)
+		self.huggingface_panel = HuggingFaceSearchPanel(self.notebook, on_change=self.refresh_all)
 		self.official_panel = None
 		self.community_panel = None
+		self.extract_panel = ExtractSamplePanel(self.notebook, on_change=self.refresh_all)
 		self.cache_panel = SpeechCachePanel(self.notebook)
 		self.notebook.AddPage(self.installed_panel, _("Installed"))
+		self.notebook.AddPage(self.huggingface_panel, _("Hugging Face"))
+		self.notebook.AddPage(self.extract_panel, _("Extract Sample"))
 		self.notebook.AddPage(self.cache_panel, _("Speech Cache"))
 		self.notebook.Bind(wx.EVT_NOTEBOOK_PAGE_CHANGED, self.on_page_changed)
+		self.Bind(wx.EVT_CLOSE, self.on_close)
 		main_sizer.Add(self.notebook, 1, wx.EXPAND | wx.LEFT | wx.RIGHT, 10)
 		self.catalog_notice = wx.StaticText(
 			self,
@@ -1133,6 +2471,7 @@ class MaxLogicVoiceManagerDialog(wx.Dialog):
 
 	def refresh_all(self):
 		self.installed_panel.refresh_entries()
+		self.huggingface_panel.refresh_inventory_state()
 		if self.official_panel is not None:
 			self.official_panel.refresh_entries(force_refresh=False)
 		if self.community_panel is not None:
@@ -1165,4 +2504,11 @@ class MaxLogicVoiceManagerDialog(wx.Dialog):
 
 	def on_page_changed(self, event):
 		self._log_active_page()
+		event.Skip()
+
+	def on_close(self, event):
+		try:
+			self.extract_panel.cleanup()
+		except Exception:
+			pass
 		event.Skip()

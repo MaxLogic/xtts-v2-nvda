@@ -255,7 +255,7 @@ class HelperEngineClient(object):
 		)
 		return memoryview(base64.b64decode(response["audio_b64"]))
 
-	def synthesize_preview_to_int16(self, text, voice_path, speed=1.0, volume=1.0, language="en-us"):
+	def synthesize_preview_to_int16(self, text, voice_path, speed=1.0, volume=1.0, language="en-us", cache_key=None):
 		response = self._request(
 			{
 				"op": "synthesize_preview",
@@ -264,9 +264,19 @@ class HelperEngineClient(object):
 				"speed": speed,
 				"volume": volume,
 				"language": language,
+				"cache_key": cache_key,
 			}
 		)
 		return memoryview(base64.b64decode(response["audio_b64"]))
+
+	def validate_conditioning_file(self, conditioning_path):
+		response = self._request(
+			{
+				"op": "validate_conditioning",
+				"conditioning_path": conditioning_path,
+			}
+		)
+		return response.get("result") or {}
 
 	def get_cache_stats(self):
 		return self._request({"op": "get_cache_stats"})

@@ -129,6 +129,12 @@ def main():
 						}
 					)
 					continue
+				if op == "validate_conditioning":
+					if engine is None:
+						raise RuntimeError("Conditioning validation is unavailable in cache-only helper mode")
+					result = engine.validate_conditioning_file(request["conditioning_path"])
+					_send({"ok": True, "id": request_id, "result": result})
+					continue
 				if op == "get_cache_stats":
 					persistent_stats = None
 					if speech_cache is not None:
@@ -232,12 +238,24 @@ def main():
 				if op == "synthesize_preview":
 					if engine is None:
 						raise RuntimeError("Preview synthesis is unavailable in cache-only helper mode")
+					start_time = time.perf_counter()
+					cache_key = request.get("cache_key")
 					audio = engine.synthesize_preview_to_int16(
 						request["text"],
 						voice_path=request["voice_path"],
 						speed=request.get("speed", 1.0),
 						volume=request.get("volume", 1.0),
 						language=request.get("language", "en-us"),
+						cache_key=cache_key,
+					)
+					elapsed_ms = round((time.perf_counter() - start_time) * 1000, 1)
+					LOGGER.info(
+						"Helper preview complete. cacheKey=%s voicePath=%s lang=%s chars=%s elapsedMs=%s",
+						cache_key,
+						request.get("voice_path"),
+						request.get("language", "en-us"),
+						len(request.get("text", "")),
+						elapsed_ms,
 					)
 					_send({"ok": True, "id": request_id, "audio_b64": base64.b64encode(audio.tobytes()).decode("ascii")})
 					continue

@@ -133,6 +133,18 @@ def _enrich_entries(entries):
 	return enriched
 
 
+def _normalize_remote_url(url):
+	if not url or url.startswith("mirror://"):
+		return url
+	parts = urllib.parse.urlsplit(url)
+	if not parts.scheme or not parts.netloc:
+		return url
+	path = urllib.parse.quote(parts.path, safe="/%:@")
+	query = urllib.parse.quote(parts.query, safe="=&%:@/?")
+	fragment = urllib.parse.quote(parts.fragment, safe="=&%:@/?")
+	return urllib.parse.urlunsplit((parts.scheme, parts.netloc, path, query, fragment))
+
+
 def resolve_catalog(catalog_name="official", force_refresh=False):
 	del force_refresh
 	cached = load_cached_catalog(catalog_name)
@@ -172,7 +184,8 @@ def _download_to_temp(url, target_name):
 					target.write(chunk)
 					hasher.update(chunk)
 			return temp_path, hasher.hexdigest()
-		with urllib.request.urlopen(url, timeout=60) as response, open(temp_path, "wb") as target:
+		request_url = _normalize_remote_url(url)
+		with urllib.request.urlopen(request_url, timeout=60) as response, open(temp_path, "wb") as target:
 			while True:
 				chunk = response.read(65536)
 				if not chunk:
@@ -213,6 +226,11 @@ def download_catalog_voice_to_temp(entry, force_bad_sha=False):
 def download_catalog_voice(entry, overwrite=False, force_bad_sha=False):
 	url = entry["downloadUrl"]
 	target_name = entry.get("sourceFile") or entry.get("fileName") or ("%s.zip" % entry["id"])
+	catalog_name = entry.get("catalog", "official")
+	if catalog_name == "huggingface":
+		install_note = "Installed from Hugging Face XTTS search"
+	else:
+		install_note = "Installed from curated XTTS profile catalog"
 	log.info("MaxLogic XTTS v2 downloading catalog profile. id=%s url=%s", entry["id"], url)
 	temp_path, digest = _download_to_temp(url, target_name)
 	expected_sha = entry.get("sha256")
@@ -221,28 +239,36 @@ def download_catalog_voice(entry, overwrite=False, force_bad_sha=False):
 	try:
 		if expected_sha and digest.lower() != expected_sha.lower():
 			raise RuntimeError("SHA-256 mismatch for %s" % entry["id"])
+		extra_metadata = {
+			"displayName": entry.get("displayName", entry["id"]),
+			"catalogId": entry["id"],
+			"catalogName": catalog_name,
+			"language": entry.get("language"),
+			"languageLabel": entry.get("languageLabel"),
+			"gender": entry.get("gender"),
+			"genderLabel": entry.get("genderLabel"),
+			"downloadUrl": url,
+			"sha256": digest,
+			"hfModelId": entry.get("hfModelId"),
+			"hfRepoUrl": entry.get("hfRepoUrl"),
+			"license": entry.get("license"),
+			"licenseUrl": entry.get("licenseUrl"),
+		}
+		if entry.get("installVoiceId"):
+			extra_metadata["voiceId"] = entry["installVoiceId"]
 		records = install_voice_files(
 			temp_path,
 			source_type="catalog-download",
 			overwrite=overwrite,
-			install_note="Installed from curated XTTS profile catalog",
-			extra_metadata={
-				"displayName": entry.get("displayName", entry["id"]),
-				"catalogId": entry["id"],
-				"catalogName": entry.get("catalog", "official"),
-				"language": entry.get("language"),
-				"languageLabel": entry.get("languageLabel"),
-				"gender": entry.get("gender"),
-				"genderLabel": entry.get("genderLabel"),
-				"downloadUrl": url,
-				"sha256": digest,
-			},
+			install_note=install_note,
+			extra_metadata=extra_metadata,
 		)
-		cache_payload = {
-			"schemaVersion": CATALOG_SCHEMA_VERSION,
-			"entries": _enrich_entries(load_bundled_catalog(entry.get("catalog", "official")).get("entries", [])),
-		}
-		_write_catalog_cache(entry.get("catalog", "official"), cache_payload)
+		if catalog_name in CATALOGS:
+			cache_payload = {
+				"schemaVersion": CATALOG_SCHEMA_VERSION,
+				"entries": _enrich_entries(load_bundled_catalog(catalog_name).get("entries", [])),
+			}
+			_write_catalog_cache(catalog_name, cache_payload)
 		return records
 	finally:
 		if os.path.isfile(temp_path):

@@ -62,7 +62,7 @@ class SynthDriver(synthDriverHandler.SynthDriver):
 			if XTTSV2Engine is not None:
 				missing = XTTSV2Engine.check_runtime_requirements(PACKAGE_ROOT)
 			else:
-				missing = ["Coqui TTS Python package", "voices/*.(wav|mp3|flac|ogg|m4a|aac)"]
+				missing = ["Coqui TTS Python package", "voices/*.(wav|mp3|flac|ogg|m4a|aac|pth)"]
 			missing = [item for item in missing if item != "Coqui TTS Python package"]
 			if missing:
 				log.warning("MaxLogic XTTS v2 unavailable, missing assets: %s", ", ".join(missing))

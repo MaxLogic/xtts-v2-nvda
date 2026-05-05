@@ -3,7 +3,10 @@
 import json
 import os
 import subprocess
+import tempfile
 import threading
+import hashlib
+import wave
 
 import addonHandler
 import config
@@ -23,6 +26,7 @@ from synthDrivers.maxlogic_xtts_v2._catalog import (
 	download_catalog_voice_to_temp,
 	get_catalog_entries,
 )
+from synthDrivers.maxlogic_xtts_v2._huggingface import search_huggingface_entries
 from synthDrivers.maxlogic_xtts_v2._cache_settings import (
 	CACHE_MODE_CUSTOM,
 	CACHE_MODE_SHORT_MEDIUM,
@@ -32,12 +36,14 @@ from synthDrivers.maxlogic_xtts_v2._cache_settings import (
 	save_cache_settings,
 )
 from synthDrivers.maxlogic_xtts_v2._helper_client import HelperEngineClient
+from synthDrivers.maxlogic_xtts_v2._paths import get_cache_dir, get_temp_dir
 from synthDrivers.maxlogic_xtts_v2._voice_store import (
 	DuplicateVoiceError,
 	VoiceStoreError,
 	discover_voice_records,
 	install_voice_files,
 	list_user_voice_records,
+	normalize_voice_id,
 	remove_user_voice,
 )
 
@@ -50,6 +56,29 @@ _preview_player_rate = None
 _preview_helper = None
 _preview_helper_thread = None
 _sample_text_cache = None
+_PREVIEW_WAV_CACHE_VERSION = 1
+_PREVIEW_WAV_CACHE_DIR_NAME = "preview-wav"
+
+_PREVIEW_LANGUAGE_LABELS = {
+	"ar": _("Arabic"),
+	"cs": _("Czech"),
+	"de": _("German"),
+	"en": _("English"),
+	"en-gb": _("English (United Kingdom)"),
+	"en-us": _("English (United States)"),
+	"es": _("Spanish"),
+	"fr": _("French"),
+	"hu": _("Hungarian"),
+	"it": _("Italian"),
+	"ja": _("Japanese"),
+	"ko": _("Korean"),
+	"nl": _("Dutch"),
+	"pl": _("Polish"),
+	"pt": _("Portuguese"),
+	"ru": _("Russian"),
+	"tr": _("Turkish"),
+	"zh-cn": _("Chinese (Simplified)"),
+}
 
 
 CACHE_MODE_OPTIONS = [
@@ -99,6 +128,80 @@ def get_sample_text(language):
 	return payload["default"]
 
 
+def get_preview_language_options():
+	payload = _load_sample_texts()
+	keys = sorted(key for key in payload.keys() if key != "default")
+	return [
+		(key, _PREVIEW_LANGUAGE_LABELS.get(key, key))
+		for key in keys
+	]
+
+
+def _preview_wav_cache_dir():
+	path = os.path.join(get_cache_dir(create=True), _PREVIEW_WAV_CACHE_DIR_NAME)
+	os.makedirs(path, exist_ok=True)
+	return path
+
+
+def _fingerprint_file(path):
+	if not path or not os.path.isfile(path):
+		return None
+	stat = os.stat(path)
+	return {
+		"name": os.path.basename(path),
+		"size": int(stat.st_size),
+		"mtimeNs": int(getattr(stat, "st_mtime_ns", int(stat.st_mtime * 1000000000))),
+	}
+
+
+def _preview_cache_path(cache_payload):
+	cache_key = hashlib.sha256(
+		json.dumps(cache_payload, ensure_ascii=True, sort_keys=True, separators=(",", ":")).encode("utf-8")
+	).hexdigest()
+	return os.path.join(_preview_wav_cache_dir(), "%s.wav" % cache_key)
+
+
+def _read_preview_wav_cache(cache_payload):
+	cache_path = _preview_cache_path(cache_payload)
+	if not os.path.isfile(cache_path):
+		return None
+	try:
+		with wave.open(cache_path, "rb") as handle:
+			if handle.getnchannels() != 1 or handle.getsampwidth() != 2:
+				raise ValueError("Unsupported preview cache format")
+			return {
+				"path": cache_path,
+				"sampleRate": int(handle.getframerate()),
+				"audioBytes": handle.readframes(handle.getnframes()),
+			}
+	except Exception:
+		log.warning("MaxLogic XTTS v2 preview WAV cache unreadable, removing: %s", cache_path, exc_info=True)
+		try:
+			os.remove(cache_path)
+		except Exception:
+			pass
+		return None
+
+
+def _write_preview_wav_cache(cache_payload, sample_rate, audio_bytes):
+	cache_path = _preview_cache_path(cache_payload)
+	temp_fd, temp_path = tempfile.mkstemp(prefix="maxlogic-xtts-v2-preview-", suffix=".wav", dir=_preview_wav_cache_dir())
+	os.close(temp_fd)
+	try:
+		with wave.open(temp_path, "wb") as handle:
+			handle.setnchannels(1)
+			handle.setsampwidth(2)
+			handle.setframerate(int(sample_rate))
+			handle.writeframes(audio_bytes)
+		os.replace(temp_path, cache_path)
+	except Exception:
+		try:
+			os.remove(temp_path)
+		except Exception:
+			pass
+		raise
+
+
 def _begin_preview():
 	global _preview_generation
 	with _preview_lock:
@@ -132,21 +235,30 @@ def _get_preview_player(sample_rate):
 	return _preview_player
 
 
-def _play_preview_audio(audio_bytes, sample_rate, generation):
+def _play_preview_audio(audio_bytes, sample_rate, generation, on_playback_started=None):
 	with _preview_lock:
 		if generation != _preview_generation:
-			return False
+			return "superseded"
 		player = _get_preview_player(sample_rate)
 		player.stop()
-	player.feed(audio_bytes)
+		player.feed(audio_bytes)
+	if on_playback_started is not None:
+		wx.CallAfter(on_playback_started)
 	player.idle()
-	return True
+	with _preview_lock:
+		if generation != _preview_generation:
+			return "superseded"
+	return "completed"
 
 
 def stop_preview():
+	global _preview_generation
 	with _preview_lock:
+		_preview_generation += 1
 		if _preview_player is not None:
 			_preview_player.stop()
+			return True
+	return False
 
 
 def close_preview_player():
@@ -293,6 +405,196 @@ def run_runtime_setup():
 	return payload
 
 
+def _helper_python_path():
+	return HelperEngineClient._repo_helper_python(_package_root())
+
+
+def _validate_conditioning_file(conditioning_path):
+	helper = None
+	try:
+		helper = _get_preview_helper(skip_prewarm=True)
+		return helper.validate_conditioning_file(conditioning_path)
+	except Exception as error:
+		close_preview_helper()
+		raise VoiceStoreError("XTTS conditioning validation failed: %s" % error)
+
+
+def _audio_tool_script_path():
+	return os.path.join(_package_root(), "_audio_tools.py")
+
+
+def _run_audio_tool(arguments):
+	helper_python = _helper_python_path()
+	if not os.path.isfile(helper_python):
+		raise RuntimeError("XTTS helper runtime is not installed yet.")
+	script_path = _audio_tool_script_path()
+	if not os.path.isfile(script_path):
+		raise RuntimeError("Audio tool script not found: %s" % script_path)
+	command = [helper_python, script_path] + list(arguments)
+	result = subprocess.run(
+		command,
+		capture_output=True,
+		text=True,
+		encoding="utf-8",
+		errors="replace",
+		env=dict(os.environ, COQUI_TOS_AGREED="1"),
+	)
+	stdout = (result.stdout or "").strip()
+	stderr = (result.stderr or "").strip()
+	payload = None
+	if stdout:
+		for line in reversed(stdout.splitlines()):
+			line = line.strip()
+			if not line:
+				continue
+			try:
+				payload = json.loads(line)
+				break
+			except Exception:
+				continue
+	if payload is None:
+		if result.returncode != 0:
+			raise RuntimeError(stderr or stdout or "Audio helper command failed")
+		raise RuntimeError("Audio helper command returned no JSON payload")
+	if not payload.get("ok"):
+		raise RuntimeError(payload.get("error") or stderr or "Audio helper command failed")
+	return payload.get("result") or {}
+
+
+def probe_audio_source(source_path):
+	return _run_audio_tool(["probe", "--path", source_path])
+
+
+def _read_pcm16_wav(path):
+	with wave.open(path, "rb") as handle:
+		if handle.getnchannels() != 1 or handle.getsampwidth() != 2:
+			raise RuntimeError("Audio helper returned an unsupported playback WAV format.")
+		return {
+			"sampleRate": int(handle.getframerate()),
+			"audioBytes": handle.readframes(handle.getnframes()),
+			"durationMs": int(round((float(handle.getnframes()) / float(handle.getframerate())) * 1000.0)),
+		}
+
+
+def render_audio_source_segment(source_path, start_ms, end_ms):
+	temp_dir = tempfile.mkdtemp(dir=get_temp_dir(create=True))
+	temp_wav_path = os.path.join(temp_dir, "source-preview.wav")
+	try:
+		_run_audio_tool(
+			[
+				"extract",
+				"--path",
+				source_path,
+				"--out",
+				temp_wav_path,
+				"--start-ms",
+				str(float(start_ms)),
+				"--end-ms",
+				str(float(end_ms)),
+			]
+		)
+		return _read_pcm16_wav(temp_wav_path)
+	finally:
+		if os.path.isfile(temp_wav_path):
+			os.remove(temp_wav_path)
+		if os.path.isdir(temp_dir):
+			try:
+				os.rmdir(temp_dir)
+			except OSError:
+				pass
+
+
+def play_audio_source_segment(source_path, start_ms, end_ms, on_complete=None, on_playback_started=None):
+	generation = _begin_preview()
+
+	def _finish(status, error_message=None):
+		if on_complete is not None:
+			wx.CallAfter(on_complete, status, error_message)
+
+	def _worker():
+		try:
+			payload = render_audio_source_segment(source_path, start_ms, end_ms)
+			status = _play_preview_audio(
+				payload["audioBytes"],
+				payload["sampleRate"],
+				generation,
+				on_playback_started=on_playback_started,
+			)
+			_finish(status, None)
+		except Exception as error:
+			log.error("MaxLogic XTTS v2 source audio playback failed", exc_info=True)
+			_finish("error", str(error))
+
+	thread = threading.Thread(
+		target=_worker,
+		name="MaxLogicXTTSV2SourcePreview",
+		daemon=True,
+	)
+	thread.start()
+
+
+def extract_sample_to_voice(
+	source_path,
+	voice_name,
+	start_ms,
+	end_ms,
+	normalize=False,
+	trim_silence=False,
+	overwrite=False,
+):
+	voice_id = normalize_voice_id(voice_name)
+	temp_dir = tempfile.mkdtemp(dir=get_temp_dir(create=True))
+	temp_wav_path = os.path.join(temp_dir, "%s.wav" % voice_id)
+	try:
+		extraction = _run_audio_tool(
+			[
+				"extract",
+				"--path",
+				source_path,
+				"--out",
+				temp_wav_path,
+				"--start-ms",
+				str(float(start_ms)),
+				"--end-ms",
+				str(float(end_ms)),
+			]
+			+ (["--normalize"] if normalize else [])
+			+ (["--trim-silence"] if trim_silence else [])
+		)
+		records = install_voice_files(
+			temp_wav_path,
+			source_type="sample-extract",
+			overwrite=overwrite,
+			install_note="Extracted from a longer source recording",
+			extra_metadata={
+				"voiceId": voice_id,
+				"displayName": voice_name.strip(),
+				"extractedFromPath": source_path,
+				"selectionStartMs": int(round(float(start_ms))),
+				"selectionEndMs": int(round(float(end_ms))),
+				"normalizedSample": bool(normalize),
+				"trimmedSilence": bool(trim_silence),
+			},
+		)
+	finally:
+		if os.path.isfile(temp_wav_path):
+			os.remove(temp_wav_path)
+		if os.path.isdir(temp_dir):
+			try:
+				os.rmdir(temp_dir)
+			except OSError:
+				pass
+	refresh_result = refresh_active_synth(
+		reason="sample-extract",
+		preferred_voice=records[0].voice_id if len(records) == 1 else None,
+	)
+	return {
+		"records": records,
+		"extraction": extraction,
+		"refresh": refresh_result,
+	}
+
+
 def _get_cache_helper_client():
 	helper = HelperEngineClient(_package_root(), log, helper_mode="cache", skip_prewarm=True)
 	return helper, True
@@ -370,7 +672,8 @@ def install_local_voice(source_path, overwrite=False):
 		source_path,
 		source_type="local-file",
 		overwrite=overwrite,
-		install_note="Installed from local XTTS reference audio",
+		install_note="Installed from local XTTS audio or conditioning file",
+		validate_conditioning=_validate_conditioning_file,
 	)
 	refresh_result = refresh_active_synth(
 		reason="local-install",
@@ -413,42 +716,109 @@ def install_catalog_voice(entry, overwrite=False, force_bad_sha=False, refresh=T
 	}
 
 
-def play_installed_voice_sample(record, on_complete=None):
+def search_huggingface_voices(query, limit=20):
+	return search_huggingface_entries(query=query, limit=limit)
+
+
+def install_huggingface_voice(entry, overwrite=False, refresh=True):
+	records = download_catalog_voice(entry, overwrite=overwrite, force_bad_sha=False)
+	refresh_result = {
+		"refreshed": False,
+		"restartRequired": False,
+		"runtimeStatus": None,
+	}
+	if refresh:
+		refresh_result = refresh_active_synth(
+			reason="huggingface-install",
+			preferred_voice=records[0].voice_id if len(records) == 1 else None,
+		)
+	return {
+		"records": records,
+		"refresh": refresh_result,
+	}
+
+
+def _build_installed_preview_cache_payload(record, language, sample_text):
+	return {
+		"cacheVersion": _PREVIEW_WAV_CACHE_VERSION,
+		"kind": "installed",
+		"voiceId": record.voice_id,
+		"language": language,
+		"text": sample_text,
+		"profile": _fingerprint_file(record.profile_path),
+		"metadata": _fingerprint_file(record.metadata_path),
+		"references": [_fingerprint_file(path) for path in sorted(record.reference_paths or [])],
+		"conditioning": _fingerprint_file(record.conditioning_path),
+	}
+
+
+def _build_catalog_preview_cache_payload(entry, language, sample_text):
+	return {
+		"cacheVersion": _PREVIEW_WAV_CACHE_VERSION,
+		"kind": "catalog",
+		"catalog": entry.get("catalog", "official"),
+		"id": entry.get("id"),
+		"language": language,
+		"text": sample_text,
+		"downloadUrl": entry.get("downloadUrl"),
+		"sourceFile": entry.get("sourceFile"),
+		"sha256": entry.get("sha256"),
+	}
+
+
+def play_installed_voice_sample(record, on_complete=None, preview_language=None, on_playback_started=None):
 	generation = _begin_preview()
 
-	def _finish(error_message=None):
+	def _finish(status, error_message=None):
 		if on_complete is not None:
-			wx.CallAfter(on_complete, error_message)
+			wx.CallAfter(on_complete, status, error_message)
 
 	def _worker():
 		try:
-			language = ((record.metadata or {}).get("language") or "en")
+			language = (preview_language or ((record.metadata or {}).get("language")) or "en")
 			sample_text = get_sample_text(language)
-			voice_path = record.metadata_path or record.source_root or record.profile_path
-			sample_rate = 24000
-			try:
-				helper = _get_preview_helper(skip_prewarm=True)
-			except Exception as helper_error:
-				log.warning("MaxLogic XTTS v2 installed preview helper unavailable, using in-process preview: %s", helper_error)
-				from synthDrivers.maxlogic_xtts_v2._engine import XTTSV2Engine
-
-				engine = XTTSV2Engine(_package_root())
-				audio = engine.synthesize_preview_to_int16(
-					sample_text,
-					voice_path=voice_path,
-					language=language,
-				)
-				engine.close()
-				audio_bytes = audio.tobytes()
+			cache_payload = _build_installed_preview_cache_payload(record, language, sample_text)
+			cached_preview = _read_preview_wav_cache(cache_payload)
+			if cached_preview is not None:
+				audio_bytes = cached_preview["audioBytes"]
+				sample_rate = cached_preview["sampleRate"]
 			else:
-				audio_bytes = helper.synthesize_preview_to_int16(
-					sample_text,
-					voice_path=voice_path,
-					language=language,
-				).tobytes()
-				sample_rate = helper.sample_rate
-			played = _play_preview_audio(audio_bytes, sample_rate, generation)
-			_finish(None if played else "Preview was superseded by a newer request.")
+				sample_rate = 24000
+				try:
+					helper = _get_preview_helper(skip_prewarm=True)
+				except Exception as helper_error:
+					log.warning("MaxLogic XTTS v2 installed preview helper unavailable, using in-process preview: %s", helper_error)
+					from synthDrivers.maxlogic_xtts_v2._engine import XTTSV2Engine
+
+					engine = XTTSV2Engine(_package_root())
+					audio = engine.synthesize_to_int16(
+						sample_text,
+						voice=record.voice_id,
+						language=language,
+					)
+					engine.close()
+					audio_bytes = audio.tobytes()
+				else:
+					audio_bytes = helper.synthesize_to_int16(
+						sample_text,
+						voice=record.voice_id,
+						language=language,
+					).tobytes()
+					sample_rate = helper.sample_rate
+				try:
+					_write_preview_wav_cache(cache_payload, sample_rate, audio_bytes)
+				except Exception:
+					log.warning("MaxLogic XTTS v2 preview WAV cache write failed for installed voice %s", record.voice_id, exc_info=True)
+			status = _play_preview_audio(
+				audio_bytes,
+				sample_rate,
+				generation,
+				on_playback_started=on_playback_started,
+			)
+			if status == "completed":
+				_finish("completed", None)
+			else:
+				_finish(status, None)
 		except Exception as error:
 			close_preview_helper()
 			log.error(
@@ -457,7 +827,7 @@ def play_installed_voice_sample(record, on_complete=None):
 				record.source,
 				exc_info=True,
 			)
-			_finish(str(error))
+			_finish("error", str(error))
 
 	thread = threading.Thread(
 		target=_worker,
@@ -467,45 +837,74 @@ def play_installed_voice_sample(record, on_complete=None):
 	thread.start()
 
 
-def play_catalog_voice_sample(entry, on_complete=None):
+def play_catalog_voice_sample(entry, on_complete=None, preview_language=None, on_playback_started=None):
 	generation = _begin_preview()
+	cache_key = "catalog:%s:%s" % (
+		entry.get("catalog", "official"),
+		entry.get("id", "unknown"),
+	)
 
-	def _finish(error_message=None):
+	def _finish(status, error_message=None):
 		if on_complete is not None:
-			wx.CallAfter(on_complete, error_message)
+			wx.CallAfter(on_complete, status, error_message)
 
 	def _worker():
 		temp_payload = None
 		try:
 			if not entry.get("availableOnline", True):
 				raise RuntimeError("This profile is not available from the online catalog source.")
-			temp_payload = download_catalog_voice_to_temp(entry)
-			language = entry.get("language") or "en"
+			language = preview_language or entry.get("language") or "en"
 			sample_text = get_sample_text(language)
-			sample_rate = 24000
-			try:
-				helper = _get_preview_helper(skip_prewarm=True)
-			except Exception as helper_error:
-				log.warning("MaxLogic XTTS v2 preview helper unavailable, using in-process preview: %s", helper_error)
-				from synthDrivers.maxlogic_xtts_v2._engine import XTTSV2Engine
-
-				engine = XTTSV2Engine(_package_root())
-				audio = engine.synthesize_preview_to_int16(
-					sample_text,
-					voice_path=temp_payload["path"],
-					language=language,
-				)
-				engine.close()
-				audio_bytes = audio.tobytes()
+			cache_payload = _build_catalog_preview_cache_payload(entry, language, sample_text)
+			cached_preview = _read_preview_wav_cache(cache_payload)
+			if cached_preview is not None:
+				audio_bytes = cached_preview["audioBytes"]
+				sample_rate = cached_preview["sampleRate"]
 			else:
-				audio_bytes = helper.synthesize_preview_to_int16(
-					sample_text,
-					voice_path=temp_payload["path"],
-					language=language,
-				).tobytes()
-				sample_rate = helper.sample_rate
-			played = _play_preview_audio(audio_bytes, sample_rate, generation)
-			_finish(None if played else "Preview was superseded by a newer request.")
+				temp_payload = download_catalog_voice_to_temp(entry)
+				sample_rate = 24000
+				try:
+					helper = _get_preview_helper(skip_prewarm=True)
+				except Exception as helper_error:
+					log.warning("MaxLogic XTTS v2 preview helper unavailable, using in-process preview: %s", helper_error)
+					from synthDrivers.maxlogic_xtts_v2._engine import XTTSV2Engine
+
+					engine = XTTSV2Engine(_package_root())
+					audio = engine.synthesize_preview_to_int16(
+						sample_text,
+						voice_path=temp_payload["path"],
+						language=language,
+						cache_key=cache_key,
+					)
+					engine.close()
+					audio_bytes = audio.tobytes()
+				else:
+					audio_bytes = helper.synthesize_preview_to_int16(
+						sample_text,
+						voice_path=temp_payload["path"],
+						language=language,
+						cache_key=cache_key,
+					).tobytes()
+					sample_rate = helper.sample_rate
+				try:
+					_write_preview_wav_cache(cache_payload, sample_rate, audio_bytes)
+				except Exception:
+					log.warning(
+						"MaxLogic XTTS v2 preview WAV cache write failed for catalog=%s id=%s",
+						entry.get("catalog", "official"),
+						entry.get("id"),
+						exc_info=True,
+					)
+			status = _play_preview_audio(
+				audio_bytes,
+				sample_rate,
+				generation,
+				on_playback_started=on_playback_started,
+			)
+			if status == "completed":
+				_finish("completed", None)
+			else:
+				_finish(status, None)
 		except Exception as error:
 			close_preview_helper()
 			log.error(
@@ -514,7 +913,7 @@ def play_catalog_voice_sample(entry, on_complete=None):
 				entry.get("id"),
 				exc_info=True,
 			)
-			_finish(str(error))
+			_finish("error", str(error))
 		finally:
 			if temp_payload is not None:
 				if os.path.isfile(temp_payload["path"]):
@@ -624,20 +1023,27 @@ __all__ = [
 	"VoiceStoreError",
 	"clear_speech_cache",
 	"compact_speech_cache",
+	"extract_sample_to_voice",
 	"get_speech_cache_settings",
 	"get_speech_cache_stats",
 	"get_runtime_status",
+	"get_preview_language_options",
 	"get_setup_status",
 	"install_catalog_voice",
+	"install_huggingface_voice",
 	"install_local_voice",
 	"list_catalog_voices",
 	"list_installed_user_voices",
 	"play_installed_voice_sample",
 	"play_catalog_voice_sample",
+	"play_audio_source_segment",
+	"probe_audio_source",
 	"prepare_preview_runtime_async",
 	"refresh_active_synth",
+	"render_audio_source_segment",
 	"remove_local_voice",
 	"run_runtime_setup",
+	"search_huggingface_voices",
 	"close_preview_helper",
 	"save_speech_cache_settings",
 	"stop_preview",
