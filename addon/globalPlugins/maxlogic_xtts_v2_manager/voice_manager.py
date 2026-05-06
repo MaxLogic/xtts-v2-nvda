@@ -1452,9 +1452,11 @@ class ExtractSamplePanel(wx.Panel):
 		self._source_path = None
 		self._source_display_path = None
 		self._working_copy = None
+		self._working_copy_modified = False
 		self._source_info = None
 		self._transport_ready = False
 		self._playback_stop_at_ms = None
+		self._active_preview_action = None
 		self._save_busy = None
 		self._busy = False
 		self._media = None
@@ -1494,7 +1496,7 @@ class ExtractSamplePanel(wx.Panel):
 		transport_box = wx.StaticBoxSizer(wx.VERTICAL, self, _("Transport"))
 		position_row = wx.BoxSizer(wx.HORIZONTAL)
 		position_row.Add(wx.StaticText(self, label=_("Current position")), 0, wx.ALIGN_CENTER_VERTICAL | wx.ALL, 5)
-		self.current_position_ctrl = wx.TextCtrl(self, style=wx.TE_READONLY)
+		self.current_position_ctrl = wx.TextCtrl(self, style=wx.TE_PROCESS_ENTER)
 		self.current_position_ctrl.SetValue(_format_timecode(0))
 		position_row.Add(self.current_position_ctrl, 0, wx.ALL, 5)
 		position_row.Add(wx.StaticText(self, label=_("Playback speed")), 0, wx.ALIGN_CENTER_VERTICAL | wx.ALL, 5)
@@ -1520,39 +1522,65 @@ class ExtractSamplePanel(wx.Panel):
 		transport_box.Add(button_row_2, 0, wx.EXPAND)
 		main_sizer.Add(transport_box, 0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, 5)
 
-		marker_box = wx.StaticBoxSizer(wx.VERTICAL, self, _("Markers"))
-		start_row = wx.BoxSizer(wx.HORIZONTAL)
-		start_row.Add(wx.StaticText(self, label=_("Start marker")), 0, wx.ALIGN_CENTER_VERTICAL | wx.ALL, 5)
+		marker_box = wx.StaticBoxSizer(wx.VERTICAL, self, _("Selection"))
+		marker_grid = wx.FlexGridSizer(cols=4, hgap=8, vgap=8)
+		marker_grid.AddGrowableCol(1, 1)
+		marker_grid.Add(wx.StaticText(self, label=_("Start marker")), 0, wx.ALIGN_CENTER_VERTICAL)
 		self.start_marker_ctrl = wx.TextCtrl(self)
 		self.set_start_button = wx.Button(self, label=_("Set start at current position"))
-		self.play_before_start_button = wx.Button(self, label=_("Play 3s Before Start"))
-		start_row.Add(self.start_marker_ctrl, 0, wx.ALL, 5)
-		start_row.Add(self.set_start_button, 0, wx.ALL, 5)
-		start_row.Add(self.play_before_start_button, 0, wx.ALL, 5)
-		marker_box.Add(start_row, 0, wx.EXPAND)
-
-		end_row = wx.BoxSizer(wx.HORIZONTAL)
-		end_row.Add(wx.StaticText(self, label=_("End marker")), 0, wx.ALIGN_CENTER_VERTICAL | wx.ALL, 5)
+		self.play_before_start_button = wx.Button(self, label=_("3s before start"))
+		self.play_from_start_button = wx.Button(self, label=_("3s from start"))
+		marker_grid.Add(self.start_marker_ctrl, 0, wx.EXPAND)
+		marker_grid.Add(self.set_start_button, 0, wx.EXPAND)
+		marker_grid.AddSpacer(1)
+		marker_grid.AddSpacer(1)
+		marker_grid.AddSpacer(1)
+		marker_grid.Add(self.play_before_start_button, 0, wx.EXPAND)
+		marker_grid.Add(self.play_from_start_button, 0, wx.EXPAND)
+		marker_grid.Add(wx.StaticText(self, label=_("End marker")), 0, wx.ALIGN_CENTER_VERTICAL)
 		self.end_marker_ctrl = wx.TextCtrl(self)
 		self.set_end_button = wx.Button(self, label=_("Set end at current position"))
-		self.play_after_end_button = wx.Button(self, label=_("Play 3s After End"))
-		end_row.Add(self.end_marker_ctrl, 0, wx.ALL, 5)
-		end_row.Add(self.set_end_button, 0, wx.ALL, 5)
-		end_row.Add(self.play_after_end_button, 0, wx.ALL, 5)
-		marker_box.Add(end_row, 0, wx.EXPAND)
-
-		selection_row = wx.BoxSizer(wx.HORIZONTAL)
-		selection_row.Add(wx.StaticText(self, label=_("Selection length")), 0, wx.ALIGN_CENTER_VERTICAL | wx.ALL, 5)
+		self.play_before_end_button = wx.Button(self, label=_("3s before end"))
+		self.play_after_end_button = wx.Button(self, label=_("3s after end"))
+		marker_grid.Add(self.end_marker_ctrl, 0, wx.EXPAND)
+		marker_grid.Add(self.set_end_button, 0, wx.EXPAND)
+		marker_grid.AddSpacer(1)
+		marker_grid.AddSpacer(1)
+		marker_grid.AddSpacer(1)
+		marker_grid.Add(self.play_before_end_button, 0, wx.EXPAND)
+		marker_grid.Add(self.play_after_end_button, 0, wx.EXPAND)
+		marker_grid.Add(wx.StaticText(self, label=_("Selection length")), 0, wx.ALIGN_CENTER_VERTICAL)
 		self.selection_length_ctrl = wx.TextCtrl(self, style=wx.TE_READONLY)
-		selection_row.Add(self.selection_length_ctrl, 0, wx.ALL, 5)
-		self.preview_selection_button = wx.Button(self, label=_("Preview selection"))
-		selection_row.Add(self.preview_selection_button, 0, wx.ALL, 5)
-		self.delete_snippet_button = wx.Button(self, label=_("Delete snippet"))
-		selection_row.Add(self.delete_snippet_button, 0, wx.ALL, 5)
-		marker_box.Add(selection_row, 0, wx.EXPAND)
+		marker_grid.Add(self.selection_length_ctrl, 0, wx.EXPAND)
+		marker_grid.AddSpacer(1)
+		marker_grid.AddSpacer(1)
+		marker_box.Add(marker_grid, 0, wx.EXPAND | wx.ALL, 5)
 		self.selection_hint = wx.StaticText(self, label="")
 		marker_box.Add(self.selection_hint, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM, 5)
 		main_sizer.Add(marker_box, 0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, 5)
+
+		edit_box = wx.StaticBoxSizer(wx.VERTICAL, self, _("Edit and export"))
+		edit_actions = wx.FlexGridSizer(rows=0, cols=2, hgap=8, vgap=8)
+		edit_actions.AddGrowableCol(0, 1)
+		edit_actions.AddGrowableCol(1, 1)
+		self.preview_selection_button = wx.Button(self, label=_("Preview selection"))
+		self.delete_snippet_button = wx.Button(self, label=_("Delete snippet"))
+		self.save_snippet_button = wx.Button(self, label=_("Save snippet as audio"))
+		self.save_modified_audio_button = wx.Button(self, label=_("Save edited audio"))
+		for control in (
+			self.preview_selection_button,
+			self.delete_snippet_button,
+			self.save_snippet_button,
+			self.save_modified_audio_button,
+		):
+			edit_actions.Add(control, 0, wx.EXPAND)
+		edit_box.Add(edit_actions, 0, wx.EXPAND | wx.ALL, 5)
+		self.edit_hint = wx.StaticText(
+			self,
+			label=_("Delete snippet edits only the temporary copy. Save edited audio is enabled after the first deletion."),
+		)
+		edit_box.Add(self.edit_hint, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM, 5)
+		main_sizer.Add(edit_box, 0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, 5)
 
 		save_box = wx.StaticBoxSizer(wx.VERTICAL, self, _("Save as XTTS profile"))
 		voice_row = wx.BoxSizer(wx.HORIZONTAL)
@@ -1589,10 +1617,16 @@ class ExtractSamplePanel(wx.Panel):
 		self.Bind(wx.EVT_BUTTON, self.on_set_start, self.set_start_button)
 		self.Bind(wx.EVT_BUTTON, self.on_set_end, self.set_end_button)
 		self.Bind(wx.EVT_BUTTON, self.on_play_before_start, self.play_before_start_button)
+		self.Bind(wx.EVT_BUTTON, self.on_play_from_start, self.play_from_start_button)
+		self.Bind(wx.EVT_BUTTON, self.on_play_before_end, self.play_before_end_button)
 		self.Bind(wx.EVT_BUTTON, self.on_play_after_end, self.play_after_end_button)
 		self.Bind(wx.EVT_BUTTON, self.on_preview_selection, self.preview_selection_button)
 		self.Bind(wx.EVT_BUTTON, self.on_delete_snippet, self.delete_snippet_button)
+		self.Bind(wx.EVT_BUTTON, self.on_save_current_snippet, self.save_snippet_button)
+		self.Bind(wx.EVT_BUTTON, self.on_save_modified_audio, self.save_modified_audio_button)
 		self.Bind(wx.EVT_BUTTON, self.on_save_profile, self.save_button)
+		self.Bind(wx.EVT_TEXT_ENTER, self.on_current_position_enter, self.current_position_ctrl)
+		self.Bind(wx.EVT_KILL_FOCUS, self.on_current_position_kill_focus, self.current_position_ctrl)
 		self.Bind(wx.EVT_TEXT, lambda evt: self._update_marker_summary(), self.start_marker_ctrl)
 		self.Bind(wx.EVT_TEXT, lambda evt: self._update_marker_summary(), self.end_marker_ctrl)
 		self.Bind(wx.EVT_CHOICE, lambda evt: self._apply_speed(), self.speed_choice)
@@ -1618,6 +1652,8 @@ class ExtractSamplePanel(wx.Panel):
 					(wx.ACCEL_CTRL, ord("2"), _command(self.on_set_end)),
 					(wx.ACCEL_CTRL, ord("R"), _command(self.on_preview_selection)),
 					(wx.ACCEL_CTRL, ord("D"), _command(self.on_delete_snippet)),
+					(wx.ACCEL_CTRL, ord("E"), _command(self.on_save_current_snippet)),
+					(wx.ACCEL_CTRL, ord("M"), _command(self.on_save_modified_audio)),
 					(wx.ACCEL_CTRL, ord("S"), _command(self.on_save_profile)),
 				]
 			)
@@ -1625,11 +1661,63 @@ class ExtractSamplePanel(wx.Panel):
 
 	def _shortcut_hint(self):
 		return _(
-			"Shortcuts: Ctrl+O browse, Ctrl+P play/pause, Ctrl+K stop, Ctrl+Left/Right 5s, Ctrl+Shift+Left/Right 30s, Ctrl+1 start, Ctrl+2 end, Ctrl+R preview, Ctrl+D delete, Ctrl+S save."
+			"Shortcuts: Ctrl+O browse, Ctrl+P play/pause, Ctrl+K stop, Ctrl+Left/Right 5s, Ctrl+Shift+Left/Right 30s, Ctrl+1 start, Ctrl+2 end, Ctrl+R preview, Ctrl+D delete, Ctrl+E save snippet, Ctrl+M save edited audio, Ctrl+S save profile."
 		)
 
 	def _control_available(self, control):
-		return control is not None and control.IsEnabled() and not self._busy
+		return control is not None and control.IsEnabled() and control.IsShownOnScreen() and not self._busy
+
+	def _set_working_copy_modified(self, modified):
+		self._working_copy_modified = bool(modified)
+		self._update_transport_controls()
+		self.Layout()
+
+	def _source_stem(self):
+		path = self._source_display_path or self._source_path or "xtts-sample"
+		stem = os.path.splitext(os.path.basename(path))[0].strip()
+		return stem or "xtts-sample"
+
+	def _source_extension(self):
+		if self._working_copy is not None:
+			working_path = self._working_copy.get("workingPath") or ""
+			extension = os.path.splitext(working_path)[1].lower()
+			if extension:
+				return extension
+		return ".wav"
+
+	def _filename_timecode(self, ms):
+		return _format_timecode(ms).replace(":", "-").replace(".", "-")
+
+	def _save_audio_dialog(self, title, default_name, wildcard):
+		dialog = wx.FileDialog(
+			parent=gui.mainFrame,
+			message=title,
+			defaultFile=default_name,
+			wildcard=wildcard,
+			style=wx.FD_SAVE | wx.FD_OVERWRITE_PROMPT,
+		)
+		gui.mainFrame.prePopup()
+		try:
+			result_code = dialog.ShowModal()
+		finally:
+			gui.mainFrame.postPopup()
+		if result_code != wx.ID_OK:
+			return None
+		return dialog.GetPath().strip() or None
+
+	def _finish_audio_export(self, message, result=None, error_message=None):
+		self._set_busy(False)
+		if error_message:
+			gui.messageBox(
+				_("{message}\nSee NVDA's log for details.\n{error}").format(message=message, error=error_message),
+				_("Audio save failed"),
+				wx.OK | wx.ICON_ERROR,
+			)
+			return
+		path = result.get("path") if isinstance(result, dict) else None
+		self.status_label.SetLabel(
+			_("Saved audio file: {path}").format(path=path or _("unknown path"))
+		)
 
 	def _set_transport_ready(self, ready):
 		self._transport_ready = bool(ready)
@@ -1647,11 +1735,16 @@ class ExtractSamplePanel(wx.Panel):
 			self.set_start_button,
 			self.set_end_button,
 			self.play_before_start_button,
+			self.play_from_start_button,
+			self.play_before_end_button,
 			self.play_after_end_button,
 			self.preview_selection_button,
 			self.delete_snippet_button,
+			self.save_snippet_button,
 		):
 			control.Enable(enabled)
+		self.current_position_ctrl.Enable(enabled)
+		self.save_modified_audio_button.Enable(enabled and self._working_copy_modified)
 		self.speed_choice.Enable(enabled and self._media_loaded)
 		self.save_button.Enable((self._source_info is not None) and self._save_busy is None and not self._busy)
 
@@ -1660,6 +1753,7 @@ class ExtractSamplePanel(wx.Panel):
 		for control in (
 			self.browse_button,
 			self.source_path_ctrl,
+			self.current_position_ctrl,
 			self.start_marker_ctrl,
 			self.end_marker_ctrl,
 			self.voice_name_ctrl,
@@ -1731,6 +1825,21 @@ class ExtractSamplePanel(wx.Panel):
 			return
 		self.current_position_ctrl.SetValue(_format_timecode(target))
 
+	def _commit_current_position_from_control(self, show_errors=False):
+		if not self._transport_ready:
+			self.current_position_ctrl.SetValue(_format_timecode(0))
+			return False
+		try:
+			target = _parse_timecode(self.current_position_ctrl.GetValue())
+		except Exception as error:
+			self.current_position_ctrl.SetValue(_format_timecode(self._current_position_ms()))
+			if show_errors:
+				gui.messageBox(str(error), _("Invalid current position"), wx.OK | wx.ICON_WARNING)
+			return False
+		target = max(0, min(int(target), self._current_duration_ms()))
+		self._seek_absolute(target)
+		return True
+
 	def _seek_relative(self, delta_ms):
 		if not self._transport_ready or self._busy:
 			return
@@ -1756,6 +1865,12 @@ class ExtractSamplePanel(wx.Panel):
 		except Exception:
 			return False
 
+	def _toggle_preview_stop(self, preview_action):
+		if self._playing() and self._active_preview_action == preview_action:
+			self._stop_playback(reset_stop_at=True)
+			return True
+		return False
+
 	def _start_timer(self):
 		if not self._timer.IsRunning():
 			self._timer.Start(200)
@@ -1778,6 +1893,7 @@ class ExtractSamplePanel(wx.Panel):
 			self._fallback_started_at = None
 		if reset_stop_at:
 			self._playback_stop_at_ms = None
+		self._active_preview_action = None
 		self.play_pause_button.SetLabel(_("Play"))
 		self._stop_timer()
 
@@ -1797,15 +1913,16 @@ class ExtractSamplePanel(wx.Panel):
 			except Exception:
 				self._media = None
 
-	def _start_playback(self, start_ms=None, stop_at_ms=None):
+	def _start_playback(self, start_ms=None, stop_at_ms=None, preview_action=None):
 		if not self._transport_ready:
 			return
 		if start_ms is not None:
 			self._seek_absolute(start_ms)
 		self._playback_stop_at_ms = stop_at_ms
+		self._active_preview_action = preview_action
 		self._apply_speed()
 		if self._media is None or not self._media_loaded:
-			self._start_fallback_playback(start_ms=start_ms, stop_at_ms=stop_at_ms)
+			self._start_fallback_playback(start_ms=start_ms, stop_at_ms=stop_at_ms, preview_action=preview_action)
 			return
 		try:
 			self._media.Play()
@@ -1819,7 +1936,7 @@ class ExtractSamplePanel(wx.Panel):
 		self.play_pause_button.SetLabel(_("Pause"))
 		self._start_timer()
 
-	def _start_fallback_playback(self, start_ms=None, stop_at_ms=None):
+	def _start_fallback_playback(self, start_ms=None, stop_at_ms=None, preview_action=None):
 		if self._source_path is None:
 			return
 		start_ms = self._current_position_ms() if start_ms is None else int(start_ms)
@@ -1847,6 +1964,7 @@ class ExtractSamplePanel(wx.Panel):
 		self._fallback_started_at = None
 		self._fallback_playing = True
 		self._playback_stop_at_ms = stop_at_ms
+		self._active_preview_action = preview_action
 		self.play_pause_button.SetLabel(_("Pause"))
 		self._start_timer()
 
@@ -1863,10 +1981,12 @@ class ExtractSamplePanel(wx.Panel):
 			if status in ("completed", "superseded", "stopped"):
 				self._fallback_position_ms = end_ms if status == "completed" else self._current_position_ms()
 				self.current_position_ctrl.SetValue(_format_timecode(self._fallback_position_ms))
+				self._active_preview_action = None
 				self.play_pause_button.SetLabel(_("Play"))
 				self._stop_timer()
 				return
 			self.play_pause_button.SetLabel(_("Play"))
+			self._active_preview_action = None
 			self._stop_timer()
 			gui.messageBox(
 				_("Playback failed.\n{error}").format(error=error_message or _("Unknown error")),
@@ -1932,11 +2052,13 @@ class ExtractSamplePanel(wx.Panel):
 			except Exception:
 				log.warning("MaxLogic XTTS v2 temporary source cleanup failed", exc_info=True)
 		self._working_copy = None
+		self._set_working_copy_modified(False)
 
 	def _finish_source_load(self, display_path, working_copy=None, source_info=None, error_message=None):
 		self._working_copy = working_copy if error_message is None else None
 		self._source_display_path = display_path if error_message is None else None
 		self._source_path = working_copy.get("workingPath") if working_copy is not None and error_message is None else None
+		self._set_working_copy_modified(False)
 		self._source_info = source_info
 		if error_message:
 			self.source_summary.SetLabel(_("Unable to read audio metadata right now."))
@@ -2034,6 +2156,9 @@ class ExtractSamplePanel(wx.Panel):
 			else:
 				self._stop_playback(reset_stop_at=False)
 			return
+		if wx.Window.FindFocus() is self.current_position_ctrl:
+			if not self._commit_current_position_from_control(show_errors=True):
+				return
 		self._start_playback(start_ms=None, stop_at_ms=None)
 
 	def on_stop(self, event):
@@ -2044,7 +2169,8 @@ class ExtractSamplePanel(wx.Panel):
 
 	def on_timer(self, event):
 		position_ms = self._current_position_ms()
-		self.current_position_ctrl.SetValue(_format_timecode(position_ms))
+		if wx.Window.FindFocus() is not self.current_position_ctrl:
+			self.current_position_ctrl.SetValue(_format_timecode(position_ms))
 		stop_at_ms = self._playback_stop_at_ms
 		if stop_at_ms is not None and position_ms >= stop_at_ms:
 			self._stop_playback(reset_stop_at=True)
@@ -2052,7 +2178,15 @@ class ExtractSamplePanel(wx.Panel):
 			return
 		if not self._playing():
 			self.play_pause_button.SetLabel(_("Play"))
+			self._active_preview_action = None
 			self._stop_timer()
+
+	def on_current_position_enter(self, event):
+		self._commit_current_position_from_control(show_errors=True)
+
+	def on_current_position_kill_focus(self, event):
+		self._commit_current_position_from_control(show_errors=False)
+		event.Skip()
 
 	def on_set_start(self, event):
 		if not self._control_available(self.set_start_button):
@@ -2073,32 +2207,70 @@ class ExtractSamplePanel(wx.Panel):
 	def on_play_before_start(self, event):
 		if not self._control_available(self.play_before_start_button):
 			return
+		if self._toggle_preview_stop("before-start"):
+			return
 		try:
 			start_ms = _parse_timecode(self.start_marker_ctrl.GetValue())
 		except Exception as error:
 			gui.messageBox(str(error), _("Invalid start marker"), wx.OK | wx.ICON_WARNING)
 			return
-		self._start_playback(start_ms=max(0, start_ms - 3000), stop_at_ms=start_ms)
+		self._start_playback(start_ms=max(0, start_ms - 3000), stop_at_ms=start_ms, preview_action="before-start")
 
-	def on_play_after_end(self, event):
-		if not self._control_available(self.play_after_end_button):
+	def on_play_from_start(self, event):
+		if not self._control_available(self.play_from_start_button):
+			return
+		if self._toggle_preview_stop("from-start"):
+			return
+		try:
+			start_ms = _parse_timecode(self.start_marker_ctrl.GetValue())
+		except Exception as error:
+			gui.messageBox(str(error), _("Invalid start marker"), wx.OK | wx.ICON_WARNING)
+			return
+		self._start_playback(
+			start_ms=start_ms,
+			stop_at_ms=min(self._current_duration_ms(), start_ms + 3000),
+			preview_action="from-start",
+		)
+
+	def on_play_before_end(self, event):
+		if not self._control_available(self.play_before_end_button):
+			return
+		if self._toggle_preview_stop("before-end"):
 			return
 		try:
 			end_ms = _parse_timecode(self.end_marker_ctrl.GetValue())
 		except Exception as error:
 			gui.messageBox(str(error), _("Invalid end marker"), wx.OK | wx.ICON_WARNING)
 			return
-		self._start_playback(start_ms=end_ms, stop_at_ms=min(self._current_duration_ms(), end_ms + 3000))
+		self._start_playback(start_ms=max(0, end_ms - 3000), stop_at_ms=end_ms, preview_action="before-end")
+
+	def on_play_after_end(self, event):
+		if not self._control_available(self.play_after_end_button):
+			return
+		if self._toggle_preview_stop("after-end"):
+			return
+		try:
+			end_ms = _parse_timecode(self.end_marker_ctrl.GetValue())
+		except Exception as error:
+			gui.messageBox(str(error), _("Invalid end marker"), wx.OK | wx.ICON_WARNING)
+			return
+		self._start_playback(
+			start_ms=end_ms,
+			stop_at_ms=min(self._current_duration_ms(), end_ms + 3000),
+			preview_action="after-end",
+		)
 
 	def on_preview_selection(self, event):
 		if not self._control_available(self.preview_selection_button):
+			return
+		if self._toggle_preview_stop("selection"):
 			return
 		try:
 			start_ms, end_ms, __length_ms = self._validate_selection()
 		except Exception as error:
 			gui.messageBox(str(error), _("Selection not ready"), wx.OK | wx.ICON_WARNING)
 			return
-		self._start_playback(start_ms=start_ms, stop_at_ms=end_ms)
+		self._start_playback(start_ms=start_ms, stop_at_ms=end_ms, preview_action="selection")
 
 	def _finish_delete_snippet(self, start_ms, result=None, error_message=None):
 		self._set_busy(False)
@@ -2110,6 +2282,7 @@ class ExtractSamplePanel(wx.Panel):
 			)
 			return
 		self._source_info = result
+		self._set_working_copy_modified(True)
 		duration_ms = self._current_duration_ms()
 		position_ms = max(0, min(int(start_ms), duration_ms))
 		self.current_position_ctrl.SetValue(_format_timecode(position_ms))
@@ -2137,6 +2310,74 @@ class ExtractSamplePanel(wx.Panel):
 			)
 		)
 		self.Layout()
+
+	def on_save_current_snippet(self, event):
+		if not self._control_available(self.save_snippet_button):
+			return
+		if self._source_path is None:
+			return
+		try:
+			start_ms, end_ms, __length_ms = self._validate_selection()
+		except Exception as error:
+			gui.messageBox(str(error), _("Selection not ready"), wx.OK | wx.ICON_WARNING)
+			return
+		default_name = "%s-snippet-%s-%s.wav" % (
+			self._source_stem(),
+			self._filename_timecode(start_ms),
+			self._filename_timecode(end_ms),
+		)
+		target_path = self._save_audio_dialog(
+			_("Save current snippet as audio"),
+			default_name,
+			_("WAV files (*.wav)|*.wav"),
+		)
+		if not target_path:
+			return
+		if not os.path.splitext(target_path)[1]:
+			target_path += ".wav"
+		self._set_busy(True, _("Saving selected snippet as audio..."))
+
+		def _worker():
+			try:
+				result = service.export_audio_source_segment(self._source_path, target_path, start_ms, end_ms)
+			except Exception as error:
+				log.exception("MaxLogic XTTS v2 source snippet export failed", exc_info=True)
+				wx.CallAfter(self._finish_audio_export, _("Saving the selected snippet failed."), None, str(error))
+				return
+			wx.CallAfter(self._finish_audio_export, _("Saving the selected snippet failed."), result, None)
+
+		thread = threading.Thread(target=_worker, name="MaxLogicXTTSV2SourceExport", daemon=True)
+		thread.start()
+
+	def on_save_modified_audio(self, event):
+		if not self._control_available(self.save_modified_audio_button):
+			return
+		if self._working_copy is None:
+			return
+		extension = self._source_extension()
+		default_name = "%s-edited%s" % (self._source_stem(), extension)
+		target_path = self._save_audio_dialog(
+			_("Save edited audio as"),
+			default_name,
+			_("{ext} files (*{ext})|*{ext}|All files (*.*)|*.*").format(ext=extension),
+		)
+		if not target_path:
+			return
+		if not os.path.splitext(target_path)[1]:
+			target_path += extension
+		self._set_busy(True, _("Saving edited temporary audio..."))
+
+		def _worker():
+			try:
+				result = service.save_audio_working_copy(self._working_copy, target_path)
+			except Exception as error:
+				log.exception("MaxLogic XTTS v2 edited source export failed", exc_info=True)
+				wx.CallAfter(self._finish_audio_export, _("Saving the edited audio failed."), None, str(error))
+				return
+			wx.CallAfter(self._finish_audio_export, _("Saving the edited audio failed."), result, None)
+
+		thread = threading.Thread(target=_worker, name="MaxLogicXTTSV2EditedSourceExport", daemon=True)
+		thread.start()
 
 	def on_delete_snippet(self, event):
 		if not self._control_available(self.delete_snippet_button):

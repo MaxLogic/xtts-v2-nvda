@@ -320,8 +320,6 @@ class XTTSV2Engine(object):
 			speed=speed,
 		)
 		waveform = np.asarray(waveform, dtype=np.float32).reshape(-1)
-		if speed != 1.0:
-			waveform = self._time_scale(waveform, speed)
 		waveform = np.clip(waveform * max(0.0, min(1.0, float(volume))), -1.0, 1.0)
 		return (waveform * 32767.0).astype(np.int16, copy=False)
 
@@ -386,11 +384,35 @@ class XTTSV2Engine(object):
 			finally:
 				if cleanup_root:
 					shutil.rmtree(cleanup_root, ignore_errors=True)
-		self._voice_conditioning[cache_key] = {
-			"gpt_conditioning_latents": voice["gpt_conditioning_latents"].detach().cpu(),
-			"speaker_embedding": voice["speaker_embedding"].detach().cpu(),
-		}
+		self._voice_conditioning[cache_key] = self._prepare_voice_conditioning_for_inference(voice)
 		return self._voice_conditioning[cache_key]
+
+	def _prepare_voice_conditioning_for_inference(self, voice):
+		device = self._get_model_device()
+		return {
+			"gpt_conditioning_latents": self._prepare_conditioning_tensor(voice["gpt_conditioning_latents"], device),
+			"speaker_embedding": self._prepare_conditioning_tensor(voice["speaker_embedding"], device),
+		}
+
+	def _prepare_conditioning_tensor(self, tensor, device):
+		if hasattr(tensor, "detach"):
+			tensor = tensor.detach()
+		if device is not None and hasattr(tensor, "to"):
+			try:
+				return tensor.to(device)
+			except Exception:
+				log.debug("Could not move XTTS voice conditioning tensor to %s", device, exc_info=True)
+		return tensor
+
+	def _get_model_device(self):
+		model = self.tts.synthesizer.tts_model
+		device = getattr(model, "device", None)
+		if device is not None:
+			return device
+		try:
+			return next(model.parameters()).device
+		except Exception:
+			return None
 
 	def _tts_with_cached_voice(self, text, voice, language, speed):
 		model = self.tts.synthesizer.tts_model

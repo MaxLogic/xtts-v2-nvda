@@ -10,3 +10,12 @@
 - added sample extraction from long recordings inside the voice manager
 - added safe Extract Sample editing with temporary working copies, snippet deletion, and direct streaming playback for large WAV sources
 - added Extract Sample keyboard shortcuts and live selection-length guidance
+- added Extract Sample exports for the current marked snippet and the edited temporary audio copy
+- added `.m4a` Extract Sample support by decoding editable sources to temporary WAV working files
+- made the Extract Sample current-position field editable for direct seeking
+- added toggle-to-stop selection preview and 3-second auditions before/from start and before/after end markers
+- fixed installed-voice preview after adding or removing voices by refreshing the preview helper voice list
+- made the XTTS synth driver visible in NVDA's synthesizer selector whenever the helper runtime is available
+- fixed XTTS speech stalls by keeping the warmed helper process alive during normal NVDA speech cancellation
+- improved XTTS runtime responsiveness by using neutral speed at NVDA rate 50, avoiding duplicate waveform time-scaling, and keeping voice conditioning tensors on the model device
+- reduced the first XTTS playback chunk size so uncached speech can start sooner and stale focus-change requests block for less time

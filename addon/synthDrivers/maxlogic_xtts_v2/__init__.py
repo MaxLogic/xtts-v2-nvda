@@ -4,6 +4,7 @@ import re
 import threading
 import time
 import traceback
+import unicodedata
 
 import addonHandler
 import config
@@ -36,10 +37,10 @@ addonHandler.initTranslation()
 class SynthDriver(synthDriverHandler.SynthDriver):
 	name = "maxlogic_xtts_v2"
 	description = "MaxLogic XTTS v2"
-	firstChunkTargetChars = 40
-	firstChunkMaxChars = 72
-	targetChunkChars = 120
-	maxChunkChars = 170
+	firstChunkTargetChars = 14
+	firstChunkMaxChars = 24
+	targetChunkChars = 90
+	maxChunkChars = 130
 	prefetchQueueSize = 2
 	supportedSettings = (
 		synthDriverHandler.SynthDriver.VoiceSetting(),
@@ -57,16 +58,8 @@ class SynthDriver(synthDriverHandler.SynthDriver):
 
 	@classmethod
 	def check(cls):
-		missing = []
 		if HelperEngineClient is not None and HelperEngineClient.should_try(PACKAGE_ROOT):
-			if XTTSV2Engine is not None:
-				missing = XTTSV2Engine.check_runtime_requirements(PACKAGE_ROOT)
-			else:
-				missing = ["Coqui TTS Python package", "voices/*.(wav|mp3|flac|ogg|m4a|aac|pth)"]
-			missing = [item for item in missing if item != "Coqui TTS Python package"]
-			if missing:
-				log.warning("MaxLogic XTTS v2 unavailable, missing assets: %s", ", ".join(missing))
-				return False
+			log.info("MaxLogic XTTS v2 check passed via helper availability.")
 			return True
 		if _ENGINE_IMPORT_ERROR is not None:
 			log.warning("MaxLogic XTTS v2 unavailable, runtime import failed: %s", _ENGINE_IMPORT_ERROR)
@@ -168,6 +161,7 @@ class SynthDriver(synthDriverHandler.SynthDriver):
 	def terminate(self):
 		self._terminated = True
 		self.cancel()
+		self._interrupt_engine(reason="terminate", min_active_ms=0)
 		self._queue.put(None)
 		if self._worker.is_alive():
 			self._worker.join(timeout=1.0)
@@ -180,18 +174,25 @@ class SynthDriver(synthDriverHandler.SynthDriver):
 
 	def cancel(self):
 		self._generation += 1
-		if hasattr(self._engine, "interrupt"):
-			try:
-				self._engine.interrupt(reason="cancel generation=%s" % self._generation, min_active_ms=1500)
-			except Exception:
-				log.debug("MaxLogic XTTS v2 helper interrupt failed", exc_info=True)
+		self._clear_pending_speech()
+		if self._player is not None:
+			self._player.stop()
+
+	def _interrupt_engine(self, reason, min_active_ms=0):
+		if not hasattr(self._engine, "interrupt"):
+			return False
+		try:
+			return self._engine.interrupt(reason=reason, min_active_ms=min_active_ms)
+		except Exception:
+			log.debug("MaxLogic XTTS v2 helper interrupt failed", exc_info=True)
+			return False
+
+	def _clear_pending_speech(self):
 		while True:
 			try:
 				self._queue.get_nowait()
 			except queue.Empty:
 				break
-		if self._player is not None:
-			self._player.stop()
 
 	def pause(self, switch):
 		if self._player is not None and hasattr(self._player, "pause"):
@@ -353,7 +354,7 @@ class SynthDriver(synthDriverHandler.SynthDriver):
 		return audio_bytes
 
 	def _chunk_text_for_playback(self, text):
-		text = re.sub(r"\s+", " ", (text or "")).strip()
+		text = self._sanitize_text_for_tts(text)
 		if not text:
 			return []
 		chunks = []
@@ -366,11 +367,23 @@ class SynthDriver(synthDriverHandler.SynthDriver):
 				remaining,
 				target_chars=target,
 				max_chars=max_chars,
-				min_chars=24 if first else 72,
+				min_chars=8 if first else 48,
 			)
 			chunks.append(chunk)
 			first = False
 		return chunks
+
+	def _sanitize_text_for_tts(self, text):
+		text = text or ""
+		sanitized = []
+		for char in text:
+			category = unicodedata.category(char)
+			if category in ("Cc", "Cf", "Co", "Cs"):
+				if char.isspace():
+					sanitized.append(" ")
+				continue
+			sanitized.append(char)
+		return re.sub(r"\s+", " ", "".join(sanitized)).strip()
 
 	def _split_text_once(self, text, target_chars, max_chars, min_chars=48):
 		if len(text) <= max_chars:
@@ -437,7 +450,9 @@ class SynthDriver(synthDriverHandler.SynthDriver):
 
 	def _nvda_rate_to_speed(self, rate):
 		rate = max(0, min(100, int(rate)))
-		return max(0.7, min(1.4, 0.7 + (rate / 100.0) * 0.7))
+		if rate <= 50:
+			return max(0.7, min(1.0, 0.7 + (rate / 50.0) * 0.3))
+		return max(1.0, min(1.4, 1.0 + ((rate - 50) / 50.0) * 0.4))
 
 	def _get_rate(self):
 		return self._rate

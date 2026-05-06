@@ -291,6 +291,11 @@ def close_preview_helper():
 		helper.close()
 
 
+def _invalidate_preview_helper(reason):
+	close_preview_helper()
+	log.info("MaxLogic XTTS v2 preview helper invalidated. reason=%s", reason)
+
+
 def prepare_preview_runtime_async():
 	global _preview_helper_thread
 	with _preview_helper_lock:
@@ -472,10 +477,17 @@ def create_audio_working_copy(source_path):
 	if not os.path.isfile(source_path):
 		raise RuntimeError("Source audio file not found: %s" % source_path)
 	temp_dir = tempfile.mkdtemp(prefix="source-edit-", dir=get_temp_dir(create=True))
-	extension = os.path.splitext(source_path)[1] or ".audio"
-	target_path = os.path.join(temp_dir, "working-copy%s" % extension)
+	target_path = os.path.join(temp_dir, "working-copy.wav")
 	try:
-		shutil.copy2(source_path, target_path)
+		_run_audio_tool(
+			[
+				"convert-to-wav",
+				"--path",
+				source_path,
+				"--out",
+				target_path,
+			]
+		)
 	except Exception:
 		try:
 			shutil.rmtree(temp_dir)
@@ -486,6 +498,7 @@ def create_audio_working_copy(source_path):
 		"originalPath": source_path,
 		"workingPath": target_path,
 		"cleanupDir": temp_dir,
+		"workingFormat": "WAV",
 	}
 
 
@@ -509,6 +522,38 @@ def delete_audio_source_segment(source_path, start_ms, end_ms):
 			"delete-snippet",
 			"--path",
 			source_path,
+			"--start-ms",
+			str(float(start_ms)),
+			"--end-ms",
+			str(float(end_ms)),
+		]
+	)
+
+
+def save_audio_working_copy(payload, target_path):
+	if not payload or not payload.get("workingPath"):
+		raise RuntimeError("No temporary working audio is available.")
+	source_path = payload["workingPath"]
+	if not os.path.isfile(source_path):
+		raise RuntimeError("Temporary working audio file not found.")
+	target_dir = os.path.dirname(target_path)
+	if target_dir:
+		os.makedirs(target_dir, exist_ok=True)
+	shutil.copy2(source_path, target_path)
+	return probe_audio_source(target_path)
+
+
+def export_audio_source_segment(source_path, target_path, start_ms, end_ms):
+	target_dir = os.path.dirname(target_path)
+	if target_dir:
+		os.makedirs(target_dir, exist_ok=True)
+	return _run_audio_tool(
+		[
+			"copy-segment",
+			"--path",
+			source_path,
+			"--out",
+			target_path,
 			"--start-ms",
 			str(float(start_ms)),
 			"--end-ms",
@@ -711,6 +756,7 @@ def extract_sample_to_voice(
 		reason="sample-extract",
 		preferred_voice=records[0].voice_id if len(records) == 1 else None,
 	)
+	_invalidate_preview_helper("sample-extract")
 	return {
 		"records": records,
 		"extraction": extraction,
@@ -802,6 +848,7 @@ def install_local_voice(source_path, overwrite=False):
 		reason="local-install",
 		preferred_voice=records[0].voice_id if len(records) == 1 else None,
 	)
+	_invalidate_preview_helper("local-install")
 	return {
 		"records": records,
 		"refresh": refresh_result,
@@ -811,6 +858,7 @@ def install_local_voice(source_path, overwrite=False):
 def remove_local_voice(voice_id):
 	removed_paths = remove_user_voice(voice_id)
 	refresh_result = refresh_active_synth(reason="local-remove")
+	_invalidate_preview_helper("local-remove")
 	return {
 		"removedPaths": removed_paths,
 		"refresh": refresh_result,
@@ -833,6 +881,7 @@ def install_catalog_voice(entry, overwrite=False, force_bad_sha=False, refresh=T
 			reason="catalog-install",
 			preferred_voice=records[0].voice_id if len(records) == 1 else None,
 		)
+		_invalidate_preview_helper("catalog-install")
 	return {
 		"records": records,
 		"refresh": refresh_result,
@@ -855,6 +904,7 @@ def install_huggingface_voice(entry, overwrite=False, refresh=True):
 			reason="huggingface-install",
 			preferred_voice=records[0].voice_id if len(records) == 1 else None,
 		)
+		_invalidate_preview_helper("huggingface-install")
 	return {
 		"records": records,
 		"refresh": refresh_result,
@@ -922,6 +972,12 @@ def play_installed_voice_sample(record, on_complete=None, preview_language=None,
 					engine.close()
 					audio_bytes = audio.tobytes()
 				else:
+					if record.voice_id not in set(getattr(helper, "_voices", []) or []):
+						log.info(
+							"MaxLogic XTTS v2 preview helper voice store stale; reloading before preview. voice=%s",
+							record.voice_id,
+						)
+						helper.reload_voices(preferred_voice=record.voice_id)
 					audio_bytes = helper.synthesize_to_int16(
 						sample_text,
 						voice=record.voice_id,
@@ -1149,6 +1205,7 @@ __all__ = [
 	"create_audio_working_copy",
 	"delete_audio_source_segment",
 	"delete_audio_working_copy",
+	"export_audio_source_segment",
 	"extract_sample_to_voice",
 	"get_speech_cache_settings",
 	"get_speech_cache_stats",
@@ -1169,6 +1226,7 @@ __all__ = [
 	"render_audio_source_segment",
 	"remove_local_voice",
 	"run_runtime_setup",
+	"save_audio_working_copy",
 	"search_huggingface_voices",
 	"close_preview_helper",
 	"save_speech_cache_settings",

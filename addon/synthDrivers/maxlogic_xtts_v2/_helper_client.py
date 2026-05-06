@@ -115,7 +115,7 @@ class HelperEngineClient(object):
 					creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
 					env=self._build_launch_env(skip_prewarm=skip_prewarm),
 				)
-				self._stderr_thread = threading.Thread(target=self._drain_stderr, daemon=True)
+				self._stderr_thread = threading.Thread(target=self._drain_stderr, args=(self._process,), daemon=True)
 				self._stderr_thread.start()
 				ready = self._read_message()
 				if ready.get("ok"):
@@ -152,10 +152,10 @@ class HelperEngineClient(object):
 		self._process = None
 		self._start_locked(skip_prewarm=self._consume_skip_prewarm_locked())
 
-	def _drain_stderr(self):
-		if self._process is None or self._process.stderr is None:
+	def _drain_stderr(self, process):
+		if process is None or process.stderr is None:
 			return
-		for line in self._process.stderr:
+		for line in process.stderr:
 			line = line.rstrip()
 			if line:
 				self.logger.debug("XTTS helper: %s", line)
@@ -294,12 +294,12 @@ class HelperEngineClient(object):
 		return [text]
 
 	def close(self):
-		process = self._process
-		self._process = None
-		if process is None:
-			return
-		try:
-			with self._io_lock:
+		with self._io_lock:
+			process = self._process
+			self._process = None
+			if process is None:
+				return
+			try:
 				if process.stdin and process.stdout and process.poll() is None:
 					process.stdin.write(json.dumps({"id": 0, "op": "shutdown"}) + "\n")
 					process.stdin.flush()
@@ -307,13 +307,13 @@ class HelperEngineClient(object):
 						process.wait(timeout=0.25)
 					except Exception:
 						pass
-		except Exception:
-			pass
-		try:
-			if process.poll() is None:
-				process.terminate()
-		except Exception:
-			pass
+			except Exception:
+				pass
+			try:
+				if process.poll() is None:
+					process.terminate()
+			except Exception:
+				pass
 		self.logger.info("MaxLogic XTTS v2 helper closed. pid=%s", process.pid)
 
 	def interrupt(self, reason="stale speech", min_active_ms=0):

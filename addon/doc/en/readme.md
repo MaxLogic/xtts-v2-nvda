@@ -18,6 +18,7 @@ It is based on the `kokoro-tts-nvda` project structure, but the speech runtime i
 - Sample playback before installing a catalog profile
 - Extract a short XTTS-ready sample from a longer recording with start/end markers
 - Edit extraction sources safely by deleting marked snippets from a temporary working copy
+- Save the current marked snippet or preserve the edited working copy as a separate audio file
 - Keyboard shortcuts for Extract Sample transport, markers, preview, deletion, and saving
 - User-managed voice profiles stored outside the add-on so they survive reinstalls
 - Persistent short-speech cache and short-lived paragraph hot cache
@@ -35,6 +36,10 @@ The add-on is helper-first. The recommended setup is:
 The bootstrap script installs the latest released `coqui-tts` package from PyPI, together with the runtime dependencies it needs.
 
 By default the helper uses the Coqui model name `tts_models/multilingual/multi-dataset/xtts_v2`.
+
+Normal NVDA speech cancellation stops current audio without restarting the XTTS helper. This keeps the warmed CUDA runtime available for the next utterance; the helper is closed when the synth is terminated or NVDA switches away from it.
+
+XTTS is still a large neural voice-cloning model, so uncached text is much slower than classic screen-reader synths. The driver favors a short first chunk for lower initial latency, then relies on the persistent speech cache for repeated UI text.
 
 ## Voice profiles
 
@@ -88,13 +93,16 @@ Direct local install:
 
 Extract Sample editing:
 
-- Source recordings are copied to a temporary working file before editing, so the original recording is not changed
+- Source recordings, including `.m4a` files when ffmpeg is available, are decoded to a temporary WAV working file before editing, so the original recording is not changed
 - Use Start marker and End marker to select interruptions, then use `Delete snippet` to remove that range from the working copy
+- Use the 3-second marker preview buttons to listen before or after the start and end markers; `Preview selection` starts the marked range and stops it when pressed again
 - The working copy is used for playback, preview, and saving the final XTTS profile
+- Edit Current position directly to seek; the typed value is applied when the field loses focus or when Enter is pressed
 - Temporary working files are deleted when another source recording is selected or the voice manager closes
 - Large uncompressed `.wav` sources stream directly for responsive playback and seeking when the system media control cannot load them
 - The panel shows whether the current selection is shorter than, longer than, or within the recommended 10 to 30 second XTTS sample range
-- Keyboard shortcuts: `Ctrl+O` browse, `Ctrl+P` play or pause, `Ctrl+K` stop, `Ctrl+Left`/`Ctrl+Right` move 5 seconds, `Ctrl+Shift+Left`/`Ctrl+Shift+Right` move 30 seconds, `Ctrl+1` set start, `Ctrl+2` set end, `Ctrl+R` preview selection, `Ctrl+D` delete snippet, and `Ctrl+S` save
+- Use `Save current snippet as audio` to export the selected range as a `.wav`, or `Save edited audio as...` after deleting snippets to preserve the modified WAV working copy
+- Keyboard shortcuts: `Ctrl+O` browse, `Ctrl+P` play or pause, `Ctrl+K` stop, `Ctrl+Left`/`Ctrl+Right` move 5 seconds, `Ctrl+Shift+Left`/`Ctrl+Shift+Right` move 30 seconds, `Ctrl+1` set start, `Ctrl+2` set end, `Ctrl+R` preview selection, `Ctrl+D` delete snippet, `Ctrl+E` save current snippet, `Ctrl+M` save edited audio, and `Ctrl+S` save profile
 
 ## Supported languages
 

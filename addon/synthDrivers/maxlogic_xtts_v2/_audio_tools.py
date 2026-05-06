@@ -1,6 +1,8 @@
 import argparse
 import json
 import os
+import shutil
+import subprocess
 import sys
 import tempfile
 
@@ -96,6 +98,57 @@ def _extract(path, out_path, start_ms, end_ms, normalize=False, trim_silence=Fal
 	}
 
 
+def _convert_to_wav(path, out_path):
+	out_dir = os.path.dirname(out_path)
+	if out_dir:
+		os.makedirs(out_dir, exist_ok=True)
+	try:
+		info = sf.info(path)
+		with sf.SoundFile(path, "r") as source:
+			with sf.SoundFile(
+				out_path,
+				"w",
+				samplerate=int(info.samplerate),
+				channels=int(info.channels),
+				format="WAV",
+				subtype="PCM_16",
+			) as target:
+				_copy_frames(source, target, int(info.frames))
+	except Exception as soundfile_error:
+		ffmpeg_path = shutil.which("ffmpeg")
+		if not ffmpeg_path:
+			raise RuntimeError(
+				"Could not decode this audio file. Install ffmpeg or convert the file to WAV first. "
+				"Decoder error: %s" % soundfile_error
+			)
+		result = subprocess.run(
+			[
+				ffmpeg_path,
+				"-y",
+				"-hide_banner",
+				"-loglevel",
+				"error",
+				"-i",
+				path,
+				"-vn",
+				"-map",
+				"0:a:0",
+				"-c:a",
+				"pcm_s16le",
+				out_path,
+			],
+			stdout=subprocess.PIPE,
+			stderr=subprocess.PIPE,
+			text=True,
+			encoding="utf-8",
+			errors="replace",
+			creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+		)
+		if result.returncode != 0:
+			raise RuntimeError((result.stderr or result.stdout or "ffmpeg could not decode this audio file").strip())
+	return _probe(out_path)
+
+
 def _copy_frames(source, target, frame_count, block_size=262144):
 	remaining = int(frame_count)
 	while remaining > 0:
@@ -146,12 +199,44 @@ def _delete_snippet(path, start_ms, end_ms):
 	return result
 
 
+def _copy_segment(path, out_path, start_ms, end_ms):
+	info = sf.info(path)
+	total_frames = int(info.frames)
+	sample_rate = int(info.samplerate)
+	start_frame = max(0, min(total_frames, int(round((float(start_ms) / 1000.0) * sample_rate))))
+	end_frame = max(0, min(total_frames, int(round((float(end_ms) / 1000.0) * sample_rate))))
+	if end_frame <= start_frame:
+		raise RuntimeError("End marker must be after start marker")
+	out_dir = os.path.dirname(out_path)
+	if out_dir:
+		os.makedirs(out_dir, exist_ok=True)
+	with sf.SoundFile(path, "r") as source:
+		with sf.SoundFile(
+			out_path,
+			"w",
+			samplerate=sample_rate,
+			channels=int(info.channels),
+			format="WAV",
+			subtype="PCM_16",
+		) as target:
+			source.seek(start_frame)
+			_copy_frames(source, target, end_frame - start_frame)
+	result = _probe(out_path)
+	result["copiedDurationMs"] = int(round(((end_frame - start_frame) / float(sample_rate)) * 1000.0))
+	result["copiedFrames"] = int(end_frame - start_frame)
+	return result
+
+
 def main(argv=None):
 	parser = argparse.ArgumentParser(prog="maxlogic_xtts_v2_audio_tools")
 	subparsers = parser.add_subparsers(dest="command", required=True)
 
 	probe_parser = subparsers.add_parser("probe")
 	probe_parser.add_argument("--path", required=True)
+
+	convert_parser = subparsers.add_parser("convert-to-wav")
+	convert_parser.add_argument("--path", required=True)
+	convert_parser.add_argument("--out", required=True)
 
 	extract_parser = subparsers.add_parser("extract")
 	extract_parser.add_argument("--path", required=True)
@@ -166,10 +251,19 @@ def main(argv=None):
 	delete_parser.add_argument("--start-ms", required=True, type=float)
 	delete_parser.add_argument("--end-ms", required=True, type=float)
 
+	copy_parser = subparsers.add_parser("copy-segment")
+	copy_parser.add_argument("--path", required=True)
+	copy_parser.add_argument("--out", required=True)
+	copy_parser.add_argument("--start-ms", required=True, type=float)
+	copy_parser.add_argument("--end-ms", required=True, type=float)
+
 	args = parser.parse_args(argv)
 	try:
 		if args.command == "probe":
 			_emit({"ok": True, "result": _probe(args.path)})
+			return 0
+		if args.command == "convert-to-wav":
+			_emit({"ok": True, "result": _convert_to_wav(args.path, args.out)})
 			return 0
 		if args.command == "extract":
 			_emit(
@@ -192,6 +286,19 @@ def main(argv=None):
 					"ok": True,
 					"result": _delete_snippet(
 						args.path,
+						start_ms=args.start_ms,
+						end_ms=args.end_ms,
+					),
+				}
+			)
+			return 0
+		if args.command == "copy-segment":
+			_emit(
+				{
+					"ok": True,
+					"result": _copy_segment(
+						args.path,
+						args.out,
 						start_ms=args.start_ms,
 						end_ms=args.end_ms,
 					),
