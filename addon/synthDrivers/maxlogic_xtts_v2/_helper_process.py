@@ -24,6 +24,46 @@ def _send(payload):
 	sys.stdout.flush()
 
 
+def _get_cached_audio(speech_cache, hot_text_cache, voice, speed, volume, language, text):
+	audio_bytes = None
+	cache_state = "miss"
+	if speech_cache is not None:
+		try:
+			audio_bytes = speech_cache.get_audio(voice, speed, volume, language, text)
+		except Exception as cache_error:
+			LOGGER.warning("Helper speech cache read failed: %s", cache_error)
+		else:
+			if audio_bytes is not None:
+				cache_state = "persistent"
+	if audio_bytes is None:
+		audio_bytes = hot_text_cache.get_audio(voice, speed, volume, language, text)
+		if audio_bytes is not None:
+			cache_state = "hot"
+	return audio_bytes, cache_state
+
+
+def _store_cached_audio(speech_cache, hot_text_cache, voice, speed, volume, language, text, audio_bytes):
+	if speech_cache is not None:
+		try:
+			speech_cache.put_audio(voice, speed, volume, language, text, audio_bytes)
+		except Exception as cache_error:
+			LOGGER.warning("Helper speech cache write failed: %s", cache_error)
+	hot_text_cache.put_audio(voice, speed, volume, language, text, audio_bytes)
+
+
+def _send_audio_chunk(request_id, audio_bytes, index, final=False):
+	_send(
+		{
+			"ok": True,
+			"id": request_id,
+			"type": "audio_chunk",
+			"index": index,
+			"final": bool(final),
+			"audio_b64": base64.b64encode(audio_bytes).decode("ascii"),
+		}
+	)
+
+
 def _prewarm_engine(engine):
 	if engine.current_voice is None:
 		return
@@ -80,6 +120,7 @@ def main():
 				"current_voice": engine.current_voice if engine is not None else None,
 				"providers": providers,
 				"sample_rate": engine.sample_rate if engine is not None else 24000,
+				"streaming": bool(engine.supports_streaming()) if engine is not None else False,
 				"mode": HELPER_MODE,
 			}
 		)
@@ -190,22 +231,7 @@ def main():
 					speed = request.get("speed", 1.0)
 					volume = request.get("volume", 1.0)
 					generation = request.get("generation")
-					audio_bytes = None
-					hot_cache_hit = False
-					cache_state = "miss"
-					if speech_cache is not None:
-						try:
-							audio_bytes = speech_cache.get_audio(voice, speed, volume, language, text)
-						except Exception as cache_error:
-							LOGGER.warning("Helper speech cache read failed: %s", cache_error)
-						else:
-							if audio_bytes is not None:
-								cache_state = "persistent"
-					if audio_bytes is None:
-						audio_bytes = hot_text_cache.get_audio(voice, speed, volume, language, text)
-						hot_cache_hit = audio_bytes is not None
-						if hot_cache_hit:
-							cache_state = "hot"
+					audio_bytes, cache_state = _get_cached_audio(speech_cache, hot_text_cache, voice, speed, volume, language, text)
 					if audio_bytes is None:
 						audio = engine.synthesize_to_int16(
 							text,
@@ -215,12 +241,7 @@ def main():
 							language=language,
 						)
 						audio_bytes = audio.tobytes()
-						if speech_cache is not None:
-							try:
-								speech_cache.put_audio(voice, speed, volume, language, text, audio_bytes)
-							except Exception as cache_error:
-								LOGGER.warning("Helper speech cache write failed: %s", cache_error)
-						hot_text_cache.put_audio(voice, speed, volume, language, text, audio_bytes)
+						_store_cached_audio(speech_cache, hot_text_cache, voice, speed, volume, language, text, audio_bytes)
 					elapsed_ms = round((time.perf_counter() - start_time) * 1000, 1)
 					LOGGER.info(
 						"Helper synthesize complete. chars=%s voice=%s lang=%s speed=%s volume=%s cache=%s elapsedMs=%s generation=%s",
@@ -234,6 +255,58 @@ def main():
 						generation,
 					)
 					_send({"ok": True, "id": request_id, "audio_b64": base64.b64encode(audio_bytes).decode("ascii")})
+					continue
+				if op == "synthesize_stream":
+					if engine is None:
+						raise RuntimeError("Synthesis is unavailable in cache-only helper mode")
+					start_time = time.perf_counter()
+					text = request["text"]
+					voice = request.get("voice") or engine.current_voice
+					language = request.get("language", "en-us")
+					speed = request.get("speed", 1.0)
+					volume = request.get("volume", 1.0)
+					generation = request.get("generation")
+					audio_bytes, cache_state = _get_cached_audio(speech_cache, hot_text_cache, voice, speed, volume, language, text)
+					chunk_count = 0
+					first_chunk_ms = None
+					if audio_bytes is not None:
+						chunk_count = 1
+						first_chunk_ms = round((time.perf_counter() - start_time) * 1000, 1)
+						_send_audio_chunk(request_id, audio_bytes, chunk_count)
+					else:
+						full_audio = bytearray()
+						for audio in engine.stream_synthesize_to_int16(
+							text,
+							speed=speed,
+							voice=voice,
+							volume=volume,
+							language=language,
+						):
+							audio_chunk = audio.tobytes()
+							if not audio_chunk:
+								continue
+							full_audio.extend(audio_chunk)
+							chunk_count += 1
+							if first_chunk_ms is None:
+								first_chunk_ms = round((time.perf_counter() - start_time) * 1000, 1)
+							_send_audio_chunk(request_id, audio_chunk, chunk_count)
+						audio_bytes = bytes(full_audio)
+						_store_cached_audio(speech_cache, hot_text_cache, voice, speed, volume, language, text, audio_bytes)
+					elapsed_ms = round((time.perf_counter() - start_time) * 1000, 1)
+					LOGGER.info(
+						"Helper synthesize stream complete. chars=%s voice=%s lang=%s speed=%s volume=%s cache=%s chunks=%s firstChunkMs=%s elapsedMs=%s generation=%s",
+						len(text),
+						voice,
+						language,
+						speed,
+						volume,
+						cache_state,
+						chunk_count,
+						first_chunk_ms,
+						elapsed_ms,
+						generation,
+					)
+					_send({"ok": True, "id": request_id, "type": "done", "chunks": chunk_count, "elapsedMs": elapsed_ms})
 					continue
 				if op == "synthesize_preview":
 					if engine is None:

@@ -23,11 +23,13 @@
 <li>Save the current marked snippet or preserve the edited working copy as a separate audio file</li>
 <li>Keyboard shortcuts for Extract Sample transport, markers, preview, deletion, and saving</li>
 <li>Speech cache for repeated short utterances</li>
+<li>Streamed uncached XTTS speech when the helper runtime supports it</li>
 </ul>
 <p>User profiles are stored in <code>%APPDATA%\nvda\maxlogicXTTSv2\voices</code>.</p>
-<p>Install the add-on normally. The installer bootstraps the helper runtime automatically. If the helper runtime is missing or needs repair, open <code>NVDA menu -&gt; MaxLogic XTTS v2 voice manager...</code> and use <code>Set up XTTS runtime</code>. The setup step installs the latest released Coqui TTS package from PyPI.</p>
+<p>Install the add-on normally. The installer bootstraps the helper runtime automatically. If the helper runtime is missing or needs repair, open <code>NVDA menu -&gt; MaxLogic XTTS v2 voice manager...</code> and use <code>Set up XTTS runtime</code>. The setup step installs the pinned helper runtime tested with this add-on.</p>
+<p>The bootstrap script installs Python packages pinned for the tested XTTS streaming stack: <code>coqui-tts==0.24.3</code>, <code>transformers==4.46.1</code>, <code>numpy&lt;2</code>, and PyTorch/Torchaudio 2.11.0 for the selected provider. Auto setup prefers Python 3.11 when available because that is the tested environment.</p>
 <p>Normal NVDA speech cancellation stops current audio without restarting the XTTS helper. This keeps the warmed CUDA runtime available for the next utterance; the helper is closed when the synth is terminated or NVDA switches away from it.</p>
-<p>XTTS is still a large neural voice-cloning model, so uncached text is much slower than classic screen-reader synths. The driver favors a short first chunk for lower initial latency, then relies on the persistent speech cache for repeated UI text.</p>
+<p>XTTS is still a large neural voice-cloning model, so uncached text is much slower than classic screen-reader synths. With the pinned helper runtime, the driver streams generated audio chunks as they become available, then relies on the persistent speech cache for repeated UI text. If a different helper runtime does not report streaming support, the add-on falls back to full-buffer synthesis.</p>
 <p>Bundled starter voices: <code>Gosia</code>, <code>Darkman</code>, <code>Kathleen</code>, <code>Joe</code>, and <code>Kerstin</code>.</p>
 <p>The Official tab uses curated CC0 OHF Voice samples. The Community tab adds curated voices from Thorsten-Voice and Kyutai.</p>
 <p>The Hugging Face tab searches live XTTS-related repos that expose playable sample audio, lets you preview those samples, and installs from the sample audio rather than trusting arbitrary checkpoint files.</p>

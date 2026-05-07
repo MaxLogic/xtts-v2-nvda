@@ -48,7 +48,7 @@ function Get-PythonLauncher {
     }
 
     if (Get-Command py -ErrorAction SilentlyContinue) {
-        $preferredVersions = @("3.14", "3.13", "3.12", "3.11", "3.10")
+        $preferredVersions = @("3.11", "3.10", "3.12")
         $launcherListing = & py -0p 2>$null
         foreach ($version in $preferredVersions) {
             if ($launcherListing -match [regex]::Escape("-V:$version")) {
@@ -120,11 +120,11 @@ switch ($resolvedProvider) {
     }
 }
 
-Write-Host "Installing the latest PyTorch runtime for provider '$resolvedProvider'"
-& $helperPython -m pip install --upgrade torch torchaudio --index-url $torchIndexUrl
+Write-Host "Installing the pinned PyTorch runtime for provider '$resolvedProvider'"
+& $helperPython -m pip install --upgrade "torch==2.11.0" "torchaudio==2.11.0" --index-url $torchIndexUrl
 
-Write-Host "Installing the latest Coqui TTS helper runtime"
-& $helperPython -m pip install --upgrade torchcodec "coqui-tts[codec]"
+Write-Host "Installing the pinned Coqui TTS helper runtime"
+& $helperPython -m pip install --upgrade "numpy<2" "transformers==4.46.1" "coqui-tts==0.24.3"
 
 Write-Host "Preparing XTTS v2 model cache"
 $env:COQUI_TOS_AGREED = "1"
@@ -155,9 +155,12 @@ TTS(model_name, gpu=False)
 Write-Host "Verifying XTTS helper runtime"
 @'
 import json
+import importlib.metadata as metadata
 import torch
 
 payload = {
+    "python": __import__("sys").version.split()[0],
+    "coquiTts": metadata.version("coqui-tts"),
     "torch": torch.__version__,
     "cuda": torch.version.cuda,
     "cudaAvailable": bool(torch.cuda.is_available()),
@@ -169,9 +172,11 @@ print(json.dumps(payload))
 Write-Host ""
 Write-Host "Helper environment ready."
 Write-Host "Python: $helperPython"
-Write-Host "This tracks the latest released Coqui TTS package from PyPI."
+Write-Host "This installs the pinned Coqui TTS 0.24.3 runtime tested with XTTS streaming."
 Write-Host "Set MAXLOGIC_XTTS_V2_HELPER_PYTHON to override discovery if needed."
 @{
     helperPython = $helperPython
     provider = $resolvedProvider
+    coquiTts = "0.24.3"
+    torch = "2.11.0"
 } | ConvertTo-Json -Depth 4

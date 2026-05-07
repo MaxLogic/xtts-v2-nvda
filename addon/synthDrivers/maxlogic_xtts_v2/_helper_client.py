@@ -31,6 +31,7 @@ class HelperEngineClient(object):
 		self._voice = None
 		self._voices = []
 		self._providers = []
+		self._streaming = False
 		self._process = None
 		self._stderr_thread = None
 		self._mode = helper_mode
@@ -122,12 +123,14 @@ class HelperEngineClient(object):
 					self._voices = ready.get("voices", [])
 					self._voice = ready.get("current_voice")
 					self._providers = ready.get("providers", [])
+					self._streaming = bool(ready.get("streaming"))
 					self.sample_rate = ready.get("sample_rate", self.sample_rate)
 					self.logger.info(
-						"Using MaxLogic XTTS v2 helper pid=%s with runtime %s, voices=%s, helperLog=%s",
+						"Using MaxLogic XTTS v2 helper pid=%s with runtime %s, voices=%s, streaming=%s, helperLog=%s",
 						self._process.pid,
 						self._providers,
 						len(self._voices),
+						self._streaming,
 						get_helper_log_path(),
 					)
 					return
@@ -235,6 +238,7 @@ class HelperEngineClient(object):
 		return {
 			"mode": self._mode,
 			"providers": list(self._providers),
+			"streaming": bool(self._streaming),
 			"voiceCount": len(self._voices),
 			"currentVoice": self._voice,
 			"pid": self._process.pid if self._process is not None else None,
@@ -254,6 +258,69 @@ class HelperEngineClient(object):
 			}
 		)
 		return memoryview(base64.b64decode(response["audio_b64"]))
+
+	def stream_synthesize_to_int16(self, text, speed=1.0, voice=None, volume=1.0, language="en-us", generation=None):
+		if not self._streaming:
+			yield self.synthesize_to_int16(text, speed=speed, voice=voice, volume=volume, language=language, generation=generation)
+			return
+		payload = {
+			"op": "synthesize_stream",
+			"text": text,
+			"speed": speed,
+			"voice": voice,
+			"volume": volume,
+			"language": language,
+			"generation": generation,
+		}
+		with self._io_lock:
+			self._ensure_running_locked()
+			self._request_id += 1
+			payload = dict(payload)
+			payload["id"] = self._request_id
+			start_time = time.perf_counter()
+			with self._state_lock:
+				self._request_active = True
+				self._request_started_at = start_time
+				self._request_interrupted = False
+			chunks = 0
+			try:
+				self._process.stdin.write(json.dumps(payload) + "\n")
+				self._process.stdin.flush()
+				while True:
+					response = self._read_message()
+					if response.get("id") != payload["id"]:
+						self.logger.warning("Ignored out-of-order XTTS helper response: %s", response.get("type"))
+						continue
+					if not response.get("ok"):
+						self.logger.warning("XTTS helper stream request failed. op=%s error=%s", payload.get("op"), response.get("error"))
+						raise RuntimeError(response.get("error", "Unknown helper error"))
+					response_type = response.get("type")
+					if response_type == "audio_chunk":
+						chunks += 1
+						yield memoryview(base64.b64decode(response["audio_b64"]))
+						continue
+					if response_type == "done":
+						return
+					self.logger.warning("Ignored unknown XTTS helper stream message: %s", response_type)
+			except Exception:
+				with self._state_lock:
+					interrupted = self._request_interrupted
+				if interrupted:
+					raise HelperRequestInterrupted("Helper request interrupted")
+				raise
+			finally:
+				elapsed_ms = round((time.perf_counter() - start_time) * 1000, 1)
+				self.logger.info(
+					"XTTS helper stream response. chars=%s voice=%s chunks=%s elapsedMs=%s",
+					len(payload.get("text", "")),
+					payload.get("voice") or self._voice,
+					chunks,
+					elapsed_ms,
+				)
+				with self._state_lock:
+					self._request_active = False
+					self._request_started_at = None
+					self._request_interrupted = False
 
 	def synthesize_preview_to_int16(self, text, voice_path, speed=1.0, volume=1.0, language="en-us", cache_key=None):
 		response = self._request(

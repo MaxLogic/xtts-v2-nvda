@@ -22,6 +22,7 @@ It is based on the `kokoro-tts-nvda` project structure, but the speech runtime i
 - Keyboard shortcuts for Extract Sample transport, markers, preview, deletion, and saving
 - User-managed voice profiles stored outside the add-on so they survive reinstalls
 - Persistent short-speech cache and short-lived paragraph hot cache
+- Streamed uncached XTTS speech when the helper runtime supports it
 - Safer text chunking for long passages
 
 ## Runtime model
@@ -30,16 +31,16 @@ The add-on is helper-first. The recommended setup is:
 
 1. Install the add-on normally. The installer bootstraps the helper runtime automatically.
 2. Open `NVDA menu -> MaxLogic XTTS v2 voice manager...` and use `Set up XTTS runtime` if the helper runtime is missing or needs repair.
-3. The setup step installs the latest released `coqui-tts` package from PyPI.
+3. The setup step installs the pinned helper runtime tested with this add-on.
 4. Select `MaxLogic XTTS v2` as the synthesizer in NVDA.
 
-The bootstrap script installs the latest released `coqui-tts` package from PyPI, together with the runtime dependencies it needs.
+The bootstrap script installs Python packages pinned for the tested XTTS streaming stack: `coqui-tts==0.24.3`, `transformers==4.46.1`, `numpy<2`, and PyTorch/Torchaudio 2.11.0 for the selected provider. Auto setup prefers Python 3.11 when available because that is the tested environment.
 
 By default the helper uses the Coqui model name `tts_models/multilingual/multi-dataset/xtts_v2`.
 
 Normal NVDA speech cancellation stops current audio without restarting the XTTS helper. This keeps the warmed CUDA runtime available for the next utterance; the helper is closed when the synth is terminated or NVDA switches away from it.
 
-XTTS is still a large neural voice-cloning model, so uncached text is much slower than classic screen-reader synths. The driver favors a short first chunk for lower initial latency, then relies on the persistent speech cache for repeated UI text.
+XTTS is still a large neural voice-cloning model, so uncached text is much slower than classic screen-reader synths. With the pinned helper runtime, the driver streams generated audio chunks as they become available, then relies on the persistent speech cache for repeated UI text. If a different helper runtime does not report streaming support, the add-on falls back to full-buffer synthesis.
 
 ## Voice profiles
 
@@ -113,7 +114,7 @@ The bundled XTTS v2 integration normalizes NVDA language tags to the language se
 ## Notes
 
 - This repository does not bundle the large XTTS model payload by default.
-- The helper environment is meant to be rebuilt from the latest released Coqui packages, not pinned to an older release.
+- The helper environment is pinned to the tested Coqui/PyTorch stack because newer Coqui releases were slower to first audio in local testing and the current `inference_stream` path hung.
 - The Official tab now ships with curated CC0 downloadable voices from OHF Voice.
 - The Community tab includes curated entries from Thorsten-Voice and Kyutai.
 - The add-on can be managed from NVDA even when the synth itself is unavailable because the helper environment or voice profiles have not been installed yet.

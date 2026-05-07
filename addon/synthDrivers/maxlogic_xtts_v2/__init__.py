@@ -312,13 +312,15 @@ class SynthDriver(synthDriverHandler.SynthDriver):
 			for chunk in chunks:
 				if stop_event.is_set():
 					return
-				audio = self._synthesize_chunk(chunk, speed, voice, volume, language, generation)
-				while not stop_event.is_set():
-					try:
-						audio_queue.put((chunk, audio), timeout=0.05)
-						break
-					except queue.Full:
+				for audio in self._synthesize_chunk_stream(chunk, speed, voice, volume, language, generation):
+					if stop_event.is_set():
 						continue
+					while not stop_event.is_set():
+						try:
+							audio_queue.put((chunk, audio), timeout=0.05)
+							break
+						except queue.Full:
+							continue
 		except Exception as error:
 			if HelperRequestInterrupted is not None and isinstance(error, HelperRequestInterrupted):
 				return
@@ -352,6 +354,32 @@ class SynthDriver(synthDriverHandler.SynthDriver):
 		audio_bytes = audio.tobytes() if hasattr(audio, "tobytes") else bytes(audio)
 		self._store_cached_audio(text, voice, speed, volume, language, audio_bytes)
 		return audio_bytes
+
+	def _synthesize_chunk_stream(self, text, speed, voice, volume, language, generation):
+		cached_audio = self._get_cached_audio(text, voice, speed, volume, language)
+		if cached_audio is not None:
+			yield cached_audio
+			return
+		streamer = getattr(self._engine, "stream_synthesize_to_int16", None)
+		if streamer is None:
+			yield self._synthesize_chunk(text, speed, voice, volume, language, generation)
+			return
+		full_audio = bytearray()
+		for audio in streamer(
+			text,
+			speed=speed,
+			voice=voice,
+			volume=volume,
+			language=language,
+			generation=generation,
+		):
+			audio_bytes = audio.tobytes() if hasattr(audio, "tobytes") else bytes(audio)
+			if not audio_bytes:
+				continue
+			full_audio.extend(audio_bytes)
+			yield audio_bytes
+		if full_audio:
+			self._store_cached_audio(text, voice, speed, volume, language, bytes(full_audio))
 
 	def _chunk_text_for_playback(self, text):
 		text = self._sanitize_text_for_tts(text)

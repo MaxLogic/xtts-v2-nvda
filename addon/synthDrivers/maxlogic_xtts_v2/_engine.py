@@ -1,4 +1,5 @@
 import hashlib
+import importlib.metadata
 import os
 import shutil
 import sys
@@ -229,6 +230,7 @@ class XTTSV2Engine(object):
 		return {
 			"mode": "in-process",
 			"providers": ["cuda"] if self.use_gpu else ["cpu"],
+			"streaming": self.supports_streaming(),
 			"voiceCount": len(self.voice_records),
 			"currentVoice": self.current_voice,
 			"pid": os.getpid(),
@@ -242,6 +244,20 @@ class XTTSV2Engine(object):
 	def validate_conditioning_file(self, conditioning_path):
 		if not conditioning_path or not os.path.isfile(conditioning_path):
 			raise VoiceStoreError("XTTS conditioning file not found: %s" % conditioning_path)
+		model = self.tts.synthesizer.tts_model
+		if not hasattr(model, "load_voice_file"):
+			try:
+				voice = self._load_conditioning_payload(conditioning_path)
+				for key in ("gpt_conditioning_latents", "speaker_embedding"):
+					if key not in voice or voice[key] is None:
+						raise RuntimeError("XTTS conditioning file is missing required field '%s'" % key)
+				return {
+					"voiceId": "validation_voice",
+					"keys": sorted(voice.keys()),
+				}
+			except Exception as error:
+				log.warning("XTTS conditioning validation failed for %s: %s", conditioning_path, error)
+				raise VoiceStoreError("Unsupported or corrupted XTTS conditioning file")
 		temp_dir = tempfile.mkdtemp(prefix="maxlogic-xtts-v2-validate-")
 		voice_id = "validation_voice"
 		target_path = os.path.join(temp_dir, "%s.pth" % voice_id)
@@ -280,6 +296,24 @@ class XTTSV2Engine(object):
 			language=language,
 		)
 
+	def stream_synthesize_to_int16(self, text, speed=1.0, voice=None, volume=1.0, language="en-us", generation=None):
+		voice_name = voice or self.current_voice
+		if voice_name is None:
+			raise RuntimeError("No XTTS voice profile is selected")
+		record = self.voice_records.get(voice_name)
+		if record is None:
+			raise KeyError("Unknown voice: %s" % voice_name)
+		for audio in self._stream_synthesize_from_references(
+			text,
+			record.reference_paths,
+			conditioning_path=record.conditioning_path,
+			cache_key=voice_name,
+			speed=speed,
+			volume=volume,
+			language=language,
+		):
+			yield audio
+
 	def synthesize_preview_to_int16(self, text, voice_path, speed=1.0, volume=1.0, language="en-us", cache_key=None):
 		reference_paths, cleanup_root = resolve_preview_reference_paths(voice_path)
 		try:
@@ -295,6 +329,28 @@ class XTTSV2Engine(object):
 			if cleanup_root:
 				import shutil
 				shutil.rmtree(cleanup_root, ignore_errors=True)
+
+	def supports_streaming(self):
+		preference = os.environ.get("MAXLOGIC_XTTS_V2_STREAMING", "auto").strip().lower()
+		if preference in ("0", "false", "no", "off"):
+			return False
+		model = getattr(getattr(self.tts, "synthesizer", None), "tts_model", None)
+		if model is None or not hasattr(model, "inference_stream"):
+			return False
+		if preference in ("1", "true", "yes", "on", "force"):
+			return True
+		try:
+			version = importlib.metadata.version("coqui-tts")
+		except Exception:
+			return False
+		parts = []
+		for part in version.split(".")[:2]:
+			try:
+				parts.append(int(part))
+			except Exception:
+				parts.append(0)
+		major, minor = (parts + [0, 0])[:2]
+		return major == 0 and minor == 24
 
 	def _normalize_language(self, language):
 		key = (language or "en").strip().lower()
@@ -322,6 +378,40 @@ class XTTSV2Engine(object):
 		waveform = np.asarray(waveform, dtype=np.float32).reshape(-1)
 		waveform = np.clip(waveform * max(0.0, min(1.0, float(volume))), -1.0, 1.0)
 		return (waveform * 32767.0).astype(np.int16, copy=False)
+
+	def _stream_synthesize_from_references(self, text, reference_paths, conditioning_path=None, cache_key=None, speed=1.0, volume=1.0, language="en-us"):
+		if not self.supports_streaming():
+			yield self._synthesize_from_references(
+				text,
+				reference_paths,
+				conditioning_path=conditioning_path,
+				cache_key=cache_key,
+				speed=speed,
+				volume=volume,
+				language=language,
+			)
+			return
+		normalized_language = self._normalize_language(language)
+		speed = max(0.6, min(1.8, float(speed)))
+		volume = max(0.0, min(1.0, float(volume)))
+		voice = self._get_or_create_voice_conditioning(
+			reference_paths,
+			cache_key=cache_key,
+			conditioning_path=conditioning_path,
+		)
+		model = self.tts.synthesizer.tts_model
+		for chunk in model.inference_stream(
+			text,
+			normalized_language,
+			voice["gpt_conditioning_latents"],
+			voice["speaker_embedding"],
+			speed=speed,
+			enable_text_splitting=False,
+			stream_chunk_size=20,
+		):
+			waveform = self._chunk_to_numpy(chunk)
+			waveform = np.clip(waveform * volume, -1.0, 1.0)
+			yield (waveform * 32767.0).astype(np.int16, copy=False)
 
 	def _build_voice_cache_key(self, reference_paths, conditioning_path=None):
 		digest = hashlib.sha256()
@@ -369,23 +459,51 @@ class XTTSV2Engine(object):
 		model = self.tts.synthesizer.tts_model
 		voice_file_path = os.path.join(self.voice_cache_dir, "%s.pth" % cache_key)
 		if conditioning_path:
-			shutil.copyfile(conditioning_path, voice_file_path)
-			voice = model.load_voice_file(cache_key, self.voice_cache_dir)
+			if hasattr(model, "load_voice_file"):
+				shutil.copyfile(conditioning_path, voice_file_path)
+				voice = model.load_voice_file(cache_key, self.voice_cache_dir)
+			else:
+				voice = self._load_conditioning_payload(conditioning_path)
 		elif os.path.isfile(voice_file_path):
-			voice = model.load_voice_file(cache_key, self.voice_cache_dir)
+			if hasattr(model, "load_voice_file"):
+				voice = model.load_voice_file(cache_key, self.voice_cache_dir)
+			else:
+				voice = self._load_conditioning_payload(voice_file_path)
 		else:
 			prepared_reference_paths, cleanup_root = self._prepare_reference_paths(reference_paths)
 			try:
-				voice = model.clone_voice(
-					prepared_reference_paths,
-					speaker_id=cache_key,
-					voice_dir=self.voice_cache_dir,
-				)
+				if hasattr(model, "clone_voice"):
+					voice = model.clone_voice(
+						prepared_reference_paths,
+						speaker_id=cache_key,
+						voice_dir=self.voice_cache_dir,
+					)
+				else:
+					gpt_conditioning_latents, speaker_embedding = model.get_conditioning_latents(audio_path=prepared_reference_paths)
+					voice = {
+						"gpt_conditioning_latents": gpt_conditioning_latents,
+						"speaker_embedding": speaker_embedding,
+					}
+					self._save_conditioning_payload(voice_file_path, voice)
 			finally:
 				if cleanup_root:
 					shutil.rmtree(cleanup_root, ignore_errors=True)
 		self._voice_conditioning[cache_key] = self._prepare_voice_conditioning_for_inference(voice)
 		return self._voice_conditioning[cache_key]
+
+	def _load_conditioning_payload(self, path):
+		import torch
+		voice = torch.load(path, map_location="cpu")
+		if not isinstance(voice, dict):
+			raise RuntimeError("XTTS conditioning file returned an unexpected payload")
+		return voice
+
+	def _save_conditioning_payload(self, path, voice):
+		try:
+			import torch
+			torch.save(voice, path)
+		except Exception:
+			log.debug("Could not write XTTS voice-conditioning cache: %s", path, exc_info=True)
 
 	def _prepare_voice_conditioning_for_inference(self, voice):
 		device = self._get_model_device()
@@ -424,6 +542,15 @@ class XTTSV2Engine(object):
 			speed=speed,
 			enable_text_splitting=False,
 		)["wav"]
+
+	def _chunk_to_numpy(self, chunk):
+		if hasattr(chunk, "detach"):
+			chunk = chunk.detach()
+		if hasattr(chunk, "cpu"):
+			chunk = chunk.cpu()
+		if hasattr(chunk, "numpy"):
+			return np.asarray(chunk.numpy(), dtype=np.float32).reshape(-1)
+		return np.asarray(chunk, dtype=np.float32).reshape(-1)
 
 	def _time_scale(self, waveform, speed):
 		if waveform.size < 2 or abs(speed - 1.0) < 0.01:
