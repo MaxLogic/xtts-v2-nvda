@@ -9,10 +9,10 @@ It is based on the `kokoro-tts-nvda` project structure, but the speech runtime i
 - Separate NVDA synth: `MaxLogic XTTS v2`
 - One-click runtime setup from the voice manager
 - Built-in voice manager available from the NVDA menu
-- Installed, Hugging Face, Official, Community, Extract Sample, and Speech Cache tabs
+- Installed, Browse Voices, Extract Sample, and Speech Cache tabs
 - Five bundled CC0 starter voices
 - Curated on-demand voice downloads from legal upstream sources
-- Live Hugging Face search for XTTS-compatible repos with playable sample audio
+- Unified voice browser for Hugging Face search, official profiles, and community profiles
 - Local profile install from `.wav`, `.mp3`, `.flac`, `.ogg`, `.m4a`, `.aac`, `.pth`, or `.zip`
 - Direct `.pth` install validates that the file is a compatible XTTS voice-conditioning file before accepting it
 - Sample playback before installing a catalog profile
@@ -73,18 +73,19 @@ Open:
 Tabs:
 
 - `Installed`: user-installed and packaged voice profiles
-- `Hugging Face`: live search for XTTS-compatible repos with sample preview and one-click install from sample audio
-- `Official`: curated downloadable voice profiles from legal upstream sources
-- `Community`: curated community profile catalog entries from Thorsten-Voice and Kyutai
+- `Browse Voices`: Hugging Face search, official downloadable profiles, and curated community profiles
 - `Extract Sample`: load a long recording, set markers, preview the selection, and save it as an XTTS profile
 - `Speech Cache`: cache settings, stats, clear, and compact actions
 
-Hugging Face search:
+Browse Voices:
 
+- Use the Source selector to switch between Hugging Face search, the official catalog, and the community catalog
 - Searches live Hugging Face model repos for XTTS-related entries that include playable sample audio
 - Uses the sample audio as the install source, then lets XTTS build its own conditioning cache locally
 - Keeps repo and license metadata in the installed profile metadata when available
 - Filters out results that do not expose a usable sample file for preview/install
+- The official source ships curated CC0 downloadable voices from OHF Voice
+- The community source includes curated entries from Thorsten-Voice and Kyutai
 
 Direct local install:
 
@@ -115,8 +116,7 @@ The bundled XTTS v2 integration normalizes NVDA language tags to the language se
 
 - This repository does not bundle the large XTTS model payload by default.
 - The helper environment is pinned to the tested Coqui/PyTorch stack because newer Coqui releases were slower to first audio in local testing and the current `inference_stream` path hung.
-- The Official tab now ships with curated CC0 downloadable voices from OHF Voice.
-- The Community tab includes curated entries from Thorsten-Voice and Kyutai.
+- The Browse Voices tab consolidates Hugging Face search, the official catalog, and the community catalog under one source selector.
 - The add-on can be managed from NVDA even when the synth itself is unavailable because the helper environment or voice profiles have not been installed yet.
 
 ## Add-on identity

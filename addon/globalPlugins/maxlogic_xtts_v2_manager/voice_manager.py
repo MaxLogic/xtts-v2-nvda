@@ -1440,6 +1440,97 @@ class HuggingFaceSearchPanel(wx.Panel):
 		gui.messageBox("\n".join(message_lines), title, wx.OK | wx.ICON_INFORMATION)
 
 
+class BrowseVoicesPanel(wx.Panel):
+	def __init__(self, parent, on_change):
+		super(BrowseVoicesPanel, self).__init__(parent)
+		self._source_options = [
+			("huggingface", _("Hugging Face search")),
+			("official", _("Official catalog")),
+			("community", _("Community catalog")),
+		]
+		self._panels = {}
+		main_sizer = wx.BoxSizer(wx.VERTICAL)
+		source_row = wx.BoxSizer(wx.HORIZONTAL)
+		source_row.Add(wx.StaticText(self, label=_("Source")), 0, wx.ALIGN_CENTER_VERTICAL | wx.ALL, 5)
+		self.source_choice = wx.Choice(self, choices=[label for __, label in self._source_options])
+		self.source_choice.SetSelection(0)
+		source_row.Add(self.source_choice, 0, wx.ALL, 5)
+		self.source_status = wx.StaticText(self, label="")
+		source_row.Add(self.source_status, 1, wx.ALIGN_CENTER_VERTICAL | wx.ALL, 5)
+		main_sizer.Add(source_row, 0, wx.EXPAND | wx.LEFT | wx.RIGHT, 0)
+		self.content_sizer = wx.BoxSizer(wx.VERTICAL)
+		main_sizer.Add(self.content_sizer, 1, wx.EXPAND)
+		self.SetSizer(main_sizer)
+
+		self._panels["huggingface"] = HuggingFaceSearchPanel(self, on_change=on_change)
+		self._panels["official"] = CatalogVoicesPanel(
+			self,
+			on_change=on_change,
+			catalog_name="official",
+			title=_("Official XTTS profiles"),
+			empty_message=_("No official XTTS profiles are available in the current catalog."),
+			allow_refresh=True,
+			show_hide_local_toggle=True,
+		)
+		self._panels["community"] = CatalogVoicesPanel(
+			self,
+			on_change=on_change,
+			catalog_name="community",
+			title=_("Community and experimental XTTS profiles"),
+			empty_message=_("No curated community XTTS profiles are listed yet."),
+			allow_refresh=False,
+			show_hide_local_toggle=True,
+		)
+		for panel in self._panels.values():
+			self.content_sizer.Add(panel, 1, wx.EXPAND)
+		self.Bind(wx.EVT_CHOICE, self.on_source_changed, self.source_choice)
+		self._show_source("huggingface")
+
+	def _selected_source(self):
+		index = self.source_choice.GetSelection()
+		if index == wx.NOT_FOUND or index >= len(self._source_options):
+			return self._source_options[0][0]
+		return self._source_options[index][0]
+
+	def _source_label(self, source_key):
+		for key, label in self._source_options:
+			if key == source_key:
+				return label
+		return source_key
+
+	def _show_source(self, source_key):
+		for key, panel in self._panels.items():
+			panel.Show(key == source_key)
+		self.source_status.SetLabel(
+			_("Browse source: {source}").format(source=self._source_label(source_key))
+		)
+		self.Layout()
+
+	def on_source_changed(self, event):
+		source_key = self._selected_source()
+		self._show_source(source_key)
+		log.info("MaxLogic XTTS v2 voice browser source selected. source=%s", source_key)
+		event.Skip()
+
+	def refresh_inventory_state(self):
+		huggingface_panel = self._panels.get("huggingface")
+		if huggingface_panel is not None:
+			huggingface_panel.refresh_inventory_state()
+		for key in ("official", "community"):
+			panel = self._panels.get(key)
+			if panel is not None:
+				panel.refresh_entries(force_refresh=False)
+
+	def active_source_payload(self):
+		source_key = self._selected_source()
+		panel = self._panels.get(source_key)
+		return {
+			"source": source_key,
+			"label": self._source_label(source_key),
+			"catalog": getattr(panel, "_catalog_name", None),
+		}
+
+
 class ExtractSamplePanel(wx.Panel):
 	_AUDIO_WILDCARD = (
 		_("Audio files (*.wav;*.mp3;*.flac;*.ogg;*.m4a;*.aac)|*.wav;*.mp3;*.flac;*.ogg;*.m4a;*.aac")
@@ -2815,97 +2906,27 @@ class MaxLogicVoiceManagerDialog(wx.Dialog):
 		)
 		self.SetSize((900, 620))
 		main_sizer = wx.BoxSizer(wx.VERTICAL)
-		self.catalog_notice = None
-		self._catalog_load_generation = 0
 		self.notebook = wx.Notebook(self)
 		self.installed_panel = InstalledVoicesPanel(self.notebook, on_change=self.refresh_all)
-		self.huggingface_panel = HuggingFaceSearchPanel(self.notebook, on_change=self.refresh_all)
-		self.official_panel = None
-		self.community_panel = None
+		self.browse_panel = BrowseVoicesPanel(self.notebook, on_change=self.refresh_all)
 		self.extract_panel = ExtractSamplePanel(self.notebook, on_change=self.refresh_all)
 		self.cache_panel = SpeechCachePanel(self.notebook)
 		self.notebook.AddPage(self.installed_panel, _("Installed"))
-		self.notebook.AddPage(self.huggingface_panel, _("Hugging Face"))
+		self.notebook.AddPage(self.browse_panel, _("Browse Voices"))
 		self.notebook.AddPage(self.extract_panel, _("Extract Sample"))
 		self.notebook.AddPage(self.cache_panel, _("Speech Cache"))
 		self.notebook.Bind(wx.EVT_NOTEBOOK_PAGE_CHANGED, self.on_page_changed)
 		self.Bind(wx.EVT_CLOSE, self.on_close)
 		main_sizer.Add(self.notebook, 1, wx.EXPAND | wx.LEFT | wx.RIGHT, 10)
-		self.catalog_notice = wx.StaticText(
-			self,
-			label=_("Loading online catalogs..."),
-		)
-		main_sizer.Add(self.catalog_notice, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM, 12)
 		button_sizer = self.CreateButtonSizer(wx.CLOSE)
 		main_sizer.Add(button_sizer, 0, wx.EXPAND | wx.ALL, 10)
 		self.SetSizer(main_sizer)
 		self.CentreOnScreen()
 		self._log_active_page()
-		self._load_catalog_panels()
-
-	def _load_catalog_panels(self):
-		self._catalog_load_generation += 1
-		generation = self._catalog_load_generation
-		self.catalog_notice.SetLabel(_("Loading online catalogs..."))
-
-		def _worker():
-			try:
-				official_entries, __ = service.list_catalog_voices(catalog_name="official", force_refresh=False)
-				community_entries, __ = service.list_catalog_voices(catalog_name="community", force_refresh=False)
-			except Exception as error:
-				wx.CallAfter(self._finish_catalog_panels_load, generation, None, None, str(error))
-				return
-			wx.CallAfter(self._finish_catalog_panels_load, generation, official_entries, community_entries, None)
-
-		thread = threading.Thread(target=_worker, name="MaxLogicXTTSV2CatalogTabs", daemon=True)
-		thread.start()
-
-	def _insert_catalog_page(self, panel, label):
-		cache_index = self.notebook.GetPageCount() - 1
-		self.notebook.InsertPage(cache_index, panel, label)
-
-	def _finish_catalog_panels_load(self, generation, official_entries=None, community_entries=None, error_message=None):
-		if generation != self._catalog_load_generation:
-			return
-		if error_message:
-			log.exception("MaxLogic XTTS v2 catalog availability load failed")
-			self.catalog_notice.SetLabel(_("Online catalogs could not be loaded right now."))
-			return
-		if official_entries and self.official_panel is None:
-			self.official_panel = CatalogVoicesPanel(
-				self.notebook,
-				on_change=self.refresh_all,
-				catalog_name="official",
-				title=_("Official XTTS profiles"),
-				empty_message=_("No official XTTS profiles are available in the current catalog."),
-				allow_refresh=True,
-				show_hide_local_toggle=True,
-			)
-			self._insert_catalog_page(self.official_panel, _("Official"))
-		if community_entries and self.community_panel is None:
-			self.community_panel = CatalogVoicesPanel(
-				self.notebook,
-				on_change=self.refresh_all,
-				catalog_name="community",
-				title=_("Community and experimental XTTS profiles"),
-				empty_message=_("No curated community XTTS profiles are listed yet."),
-				allow_refresh=False,
-				show_hide_local_toggle=True,
-			)
-			self._insert_catalog_page(self.community_panel, _("Community"))
-		if self.official_panel is None and self.community_panel is None:
-			self.catalog_notice.SetLabel(_("Online catalogs are hidden until curated XTTS profile bundles are published."))
-		else:
-			self.catalog_notice.Hide()
-			self.Layout()
 
 	def refresh_all(self):
 		self.installed_panel.refresh_entries()
-		self.huggingface_panel.refresh_inventory_state()
-		if self.official_panel is not None:
-			self.official_panel.refresh_entries(force_refresh=False)
-		if self.community_panel is not None:
-			self.community_panel.refresh_entries(force_refresh=False)
+		self.browse_panel.refresh_inventory_state()
 		self.cache_panel.refresh_from_runtime()
 
 	def _describe_active_page(self):
@@ -2915,10 +2936,16 @@ class MaxLogicVoiceManagerDialog(wx.Dialog):
 		label = self.notebook.GetPageText(index)
 		page = self.notebook.GetPage(index)
 		catalog_name = getattr(page, "_catalog_name", None)
+		source_label = None
+		if hasattr(page, "active_source_payload"):
+			source_payload = page.active_source_payload()
+			catalog_name = source_payload.get("catalog")
+			source_label = source_payload.get("label")
 		return {
 			"index": index,
 			"label": label,
 			"catalog": catalog_name,
+			"source": source_label,
 		}
 
 	def _log_active_page(self):
@@ -2926,8 +2953,9 @@ class MaxLogicVoiceManagerDialog(wx.Dialog):
 		if payload is None:
 			return
 		log.info(
-			"MaxLogic XTTS v2 voice manager selected page. label=%s catalog=%s index=%s",
+			"MaxLogic XTTS v2 voice manager selected page. label=%s source=%s catalog=%s index=%s",
 			payload["label"],
+			payload["source"] or "n/a",
 			payload["catalog"] or "n/a",
 			payload["index"],
 		)
