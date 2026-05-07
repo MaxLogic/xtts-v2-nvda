@@ -312,7 +312,8 @@ class SynthDriver(synthDriverHandler.SynthDriver):
 			for chunk in chunks:
 				if stop_event.is_set():
 					return
-				for audio in self._synthesize_chunk_stream(chunk, speed, voice, volume, language, generation):
+				audio_items = self._synthesize_chunk_audio_items(chunk, speed, voice, volume, language, generation)
+				for audio in audio_items:
 					if stop_event.is_set():
 						continue
 					while not stop_event.is_set():
@@ -355,16 +356,16 @@ class SynthDriver(synthDriverHandler.SynthDriver):
 		self._store_cached_audio(text, voice, speed, volume, language, audio_bytes)
 		return audio_bytes
 
-	def _synthesize_chunk_stream(self, text, speed, voice, volume, language, generation):
+	def _synthesize_chunk_audio_items(self, text, speed, voice, volume, language, generation):
 		cached_audio = self._get_cached_audio(text, voice, speed, volume, language)
 		if cached_audio is not None:
-			yield cached_audio
-			return
+			return [cached_audio]
 		streamer = getattr(self._engine, "stream_synthesize_to_int16", None)
 		if streamer is None:
-			yield self._synthesize_chunk(text, speed, voice, volume, language, generation)
-			return
+			return [self._synthesize_chunk(text, speed, voice, volume, language, generation)]
 		full_audio = bytearray()
+		live_stream = os.environ.get("MAXLOGIC_XTTS_V2_LIVE_STREAM_PLAYBACK", "").strip().lower() in ("1", "true", "yes", "on")
+		audio_items = []
 		for audio in streamer(
 			text,
 			speed=speed,
@@ -377,9 +378,14 @@ class SynthDriver(synthDriverHandler.SynthDriver):
 			if not audio_bytes:
 				continue
 			full_audio.extend(audio_bytes)
-			yield audio_bytes
+			if live_stream:
+				audio_items.append(audio_bytes)
 		if full_audio:
-			self._store_cached_audio(text, voice, speed, volume, language, bytes(full_audio))
+			combined_audio = bytes(full_audio)
+			self._store_cached_audio(text, voice, speed, volume, language, combined_audio)
+			if not live_stream:
+				audio_items.append(combined_audio)
+		return audio_items
 
 	def _chunk_text_for_playback(self, text):
 		text = self._sanitize_text_for_tts(text)

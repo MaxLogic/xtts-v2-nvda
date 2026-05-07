@@ -20,3 +20,4 @@
 - improved XTTS runtime responsiveness by using neutral speed at NVDA rate 50, avoiding duplicate waveform time-scaling, and keeping voice conditioning tensors on the model device
 - reduced the first XTTS playback chunk size so uncached speech can start sooner and stale focus-change requests block for less time
 - pinned the helper runtime to the tested Coqui 0.24.3 / PyTorch 2.11 stack and added streamed helper synthesis for lower first-audio latency on uncached speech
+- changed NVDA playback to coalesce helper stream chunks before feeding `nvwave` by default, avoiding silent or unstable playback from rapidly canceled live stream chunks
