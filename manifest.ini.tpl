@@ -7,4 +7,5 @@ version = {addon_version}
 docFileName = {addon_docFileName}
 minimumNVDAVersion = {addon_minimumNVDAVersion}
 lastTestedNVDAVersion = {addon_lastTestedNVDAVersion}
+changelog = """{addon_changelog}"""
 updateChannel = {addon_updateChannel}

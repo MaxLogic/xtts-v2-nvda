@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.1
+
+- Tested with NVDA 2026.1 and updated add-on compatibility metadata.
+
 ## 0.1.0
 
 - forked the Kokoro NVDA add-on layout into a new `xtts-v2-nvda` repository

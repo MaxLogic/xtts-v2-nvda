@@ -30,10 +30,11 @@ summary = "MaxLogic XTTS v2"
 description = """An XTTS v2 speech synthesizer add-on for NVDA with profile management, previews, and speech caching."""
 author = "MaxLogic"
 url = None
-version = 0.1.0
+version = 0.1.1
 docFileName = readme.html
 minimumNVDAVersion = 2024.1
-lastTestedNVDAVersion = 2025.1
+lastTestedNVDAVersion = 2026.1
+changelog = """Tested with NVDA 2026.1 and updated add-on compatibility metadata."""
 updateChannel = None
 "@
 
