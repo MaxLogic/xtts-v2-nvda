@@ -17,12 +17,10 @@ from synthDriverHandler import VoiceInfo, synthDoneSpeaking, synthIndexReached
 
 PACKAGE_ROOT = os.path.dirname(os.path.abspath(__file__))
 
-_ENGINE_IMPORT_ERROR = None
-try:
+def _load_engine_class():
 	from ._engine import XTTSV2Engine
-except Exception as error:
-	XTTSV2Engine = None
-	_ENGINE_IMPORT_ERROR = error
+	return XTTSV2Engine
+
 
 try:
 	from ._helper_client import HelperEngineClient, HelperRequestInterrupted
@@ -61,10 +59,12 @@ class SynthDriver(synthDriverHandler.SynthDriver):
 		if HelperEngineClient is not None and HelperEngineClient.should_try(PACKAGE_ROOT):
 			log.info("MaxLogic XTTS v2 check passed via helper availability.")
 			return True
-		if _ENGINE_IMPORT_ERROR is not None:
-			log.warning("MaxLogic XTTS v2 unavailable, runtime import failed: %s", _ENGINE_IMPORT_ERROR)
+		try:
+			engine_class = _load_engine_class()
+		except ImportError as error:
+			log.warning("Speech runtime unavailable: %s", error)
 			return False
-		missing = XTTSV2Engine.check_runtime_requirements(PACKAGE_ROOT)
+		missing = engine_class.check_runtime_requirements(PACKAGE_ROOT)
 		if missing:
 			log.warning("MaxLogic XTTS v2 unavailable, missing assets: %s", ", ".join(missing))
 			return False
@@ -91,9 +91,7 @@ class SynthDriver(synthDriverHandler.SynthDriver):
 				return HelperEngineClient(PACKAGE_ROOT, log)
 			except Exception as error:
 				log.warning("MaxLogic XTTS v2 helper unavailable, falling back to in-process engine: %s", error)
-		if _ENGINE_IMPORT_ERROR is not None:
-			raise _ENGINE_IMPORT_ERROR
-		return XTTSV2Engine(PACKAGE_ROOT)
+		return _load_engine_class()(PACKAGE_ROOT)
 
 	def _build_available_voices(self):
 		voices = {}

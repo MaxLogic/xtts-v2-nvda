@@ -6,7 +6,6 @@ import sys
 import time
 import traceback
 
-from _engine import XTTSV2Engine
 from _hot_text_cache import HotTextCache
 from _log import configure_helper_file_logger, get_helper_log_path
 from _speech_cache import SpeechCache
@@ -98,6 +97,7 @@ def main():
 	engine = None
 	try:
 		if HELPER_MODE != "cache":
+			from _engine import XTTSV2Engine
 			engine = XTTSV2Engine(PACKAGE_ROOT)
 		try:
 			speech_cache = SpeechCache(LOGGER)

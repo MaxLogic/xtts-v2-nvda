@@ -7,6 +7,7 @@ import wx
 
 from . import service
 from .voice_manager import MaxLogicVoiceManagerDialog
+from ._ui import show_modal
 
 
 addonHandler.initTranslation()
@@ -25,7 +26,7 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
 
 	def on_open_manager(self, event):
 		dialog = MaxLogicVoiceManagerDialog()
-		gui.runScriptModalDialog(dialog)
+		show_modal(dialog)
 
 	def terminate(self):
 		try:

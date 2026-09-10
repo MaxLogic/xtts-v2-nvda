@@ -1,41 +1,131 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
 <link rel="stylesheet" type="text/css" href="../style.css" media="screen">
-<title>MaxLogic XTTS v2 0.1.0</title>
+<title>MaxLogic XTTS v2 0.1.2</title>
 </head>
 <body>
 <h1>MaxLogic XTTS v2 for NVDA</h1>
 <p>MaxLogic XTTS v2 is an NVDA add-on that adds a separate XTTS v2 speech synthesizer under the name <code>MaxLogic XTTS v2</code>.</p>
+<p>It is based on the <code>kokoro-tts-nvda</code> project structure, but the speech runtime is swapped to Coqui XTTS v2 and voice management is centered around XTTS reference-audio profiles instead of Kokoro embeddings.</p>
+<h2>Features</h2>
 <ul>
 <li>Separate NVDA synth: <code>MaxLogic XTTS v2</code></li>
 <li>One-click runtime setup from the voice manager</li>
-<li>Voice manager with Installed, Browse Voices, Extract Sample, and Speech Cache tabs</li>
+<li>Built-in voice manager available from the NVDA menu</li>
+<li>Installed, Browse Voices, Extract Sample, and Speech Cache tabs</li>
 <li>Five bundled CC0 starter voices</li>
 <li>Curated on-demand voice downloads from legal upstream sources</li>
 <li>Unified voice browser for Hugging Face search, official profiles, and community profiles</li>
-<li>Local XTTS profile install from reference audio, XTTS conditioning files, or zip bundles</li>
-<li>Direct <code>.pth</code> install validates compatibility before accepting the file</li>
+<li>Local profile install from <code>.wav</code>, <code>.mp3</code>, <code>.flac</code>, <code>.ogg</code>, <code>.m4a</code>, <code>.aac</code>, <code>.pth</code>, or <code>.zip</code></li>
+<li>Direct <code>.pth</code> install validates that the file is a compatible XTTS voice-conditioning file before accepting it</li>
+<li>Sample playback before installing a catalog profile</li>
 <li>Extract a short XTTS-ready sample from a longer recording with start/end markers</li>
 <li>Edit extraction sources safely by deleting marked snippets from a temporary working copy</li>
 <li>Save the current marked snippet or preserve the edited working copy as a separate audio file</li>
 <li>Keyboard shortcuts for Extract Sample transport, markers, preview, deletion, and saving</li>
-<li>Speech cache for repeated short utterances</li>
+<li>User-managed voice profiles stored outside the add-on so they survive reinstalls</li>
+<li>Persistent short-speech cache and short-lived paragraph hot cache</li>
 <li>Streamed uncached XTTS speech when the helper runtime supports it</li>
+<li>Safer text chunking for long passages</li>
 </ul>
-<p>User profiles are stored in <code>%APPDATA%\nvda\maxlogicXTTSv2\voices</code>.</p>
-<p>Install the add-on normally. The installer bootstraps the helper runtime automatically. If the helper runtime is missing or needs repair, open <code>NVDA menu -&gt; MaxLogic XTTS v2 voice manager...</code> and use <code>Set up XTTS runtime</code>. The setup step installs the pinned helper runtime tested with this add-on.</p>
+<h2>Runtime model</h2>
+<p>The add-on is helper-first. The recommended setup is:</p>
+<ol>
+<li>Install the add-on normally. The installer bootstraps the helper runtime automatically.</li>
+<li>Open <code>NVDA menu -&gt; MaxLogic XTTS v2 voice manager...</code> and use <code>Set up XTTS runtime</code> if the helper runtime is missing or needs repair.</li>
+<li>The setup step installs the pinned helper runtime tested with this add-on.</li>
+<li>Select <code>MaxLogic XTTS v2</code> as the synthesizer in NVDA.</li>
+</ol>
 <p>The bootstrap script installs Python packages pinned for the tested XTTS streaming stack: <code>coqui-tts==0.24.3</code>, <code>transformers==4.46.1</code>, <code>numpy&lt;2</code>, and PyTorch/Torchaudio 2.11.0 for the selected provider. Auto setup prefers Python 3.11 when available because that is the tested environment.</p>
+<p>By default the helper uses the Coqui model name <code>tts_models/multilingual/multi-dataset/xtts_v2</code>.</p>
 <p>Normal NVDA speech cancellation stops current audio without restarting the XTTS helper. This keeps the warmed CUDA runtime available for the next utterance; the helper is closed when the synth is terminated or NVDA switches away from it.</p>
 <p>XTTS is still a large neural voice-cloning model, so uncached text is much slower than classic screen-reader synths. With the pinned helper runtime, the driver streams generated audio chunks as they become available, then relies on the persistent speech cache for repeated UI text. If a different helper runtime does not report streaming support, the add-on falls back to full-buffer synthesis.</p>
-<p>Bundled starter voices: <code>Gosia</code>, <code>Darkman</code>, <code>Kathleen</code>, <code>Joe</code>, and <code>Kerstin</code>.</p>
-<p>The Browse Voices tab consolidates Hugging Face search, the official catalog, and the community catalog under one Source selector. Hugging Face results search live XTTS-related repos that expose playable sample audio, while the official and community sources provide curated downloadable profiles.</p>
-<p>The official source uses curated CC0 OHF Voice samples. The community source adds curated voices from Thorsten-Voice and Kyutai.</p>
-<p>Direct local <code>.pth</code> install is supported, but only when the helper can load the file as a valid XTTS voice-conditioning file. Invalid or unrelated PyTorch checkpoints are rejected.</p>
-<p>The Extract Sample tab decodes each selected source recording, including <code>.m4a</code> files when ffmpeg is available, to a temporary WAV working file before editing. Use the Start marker and End marker to select interruptions, then use <code>Delete snippet</code> to remove that range from the working copy. Use the 3-second marker preview buttons to listen before or after the start and end markers; <code>Preview selection</code> starts the marked range and stops it when pressed again. Playback, preview, and saving use the working copy; the original recording is not changed. Edit Current position directly to seek; the typed value is applied when the field loses focus or when Enter is pressed. Temporary working files are deleted when another source recording is selected or the voice manager closes. Large uncompressed <code>.wav</code> sources stream directly for responsive playback and seeking when the system media control cannot load them.</p>
-<p>Use <code>Save current snippet as audio</code> to export the selected range as a <code>.wav</code>, or <code>Save edited audio as...</code> after deleting snippets to preserve the modified WAV working copy.</p>
-<p>The Extract Sample panel reports whether the selected range is shorter than, longer than, or within the recommended 10 to 30 second XTTS sample range. Shortcuts: <code>Ctrl+O</code> browse, <code>Ctrl+P</code> play or pause, <code>Ctrl+K</code> stop, <code>Ctrl+Left</code>/<code>Ctrl+Right</code> move 5 seconds, <code>Ctrl+Shift+Left</code>/<code>Ctrl+Shift+Right</code> move 30 seconds, <code>Ctrl+1</code> set start, <code>Ctrl+2</code> set end, <code>Ctrl+R</code> preview selection, <code>Ctrl+D</code> delete snippet, <code>Ctrl+E</code> save current snippet, <code>Ctrl+M</code> save edited audio, and <code>Ctrl+S</code> save profile.</p>
+<h2>Voice profiles</h2>
+<p>XTTS v2 clones from reference audio. In this add-on, a "voice" is a profile that contains one or more reference audio files, or an XTTS conditioning <code>.pth</code>, plus profile metadata.</p>
+<p>The add-on bundles these small CC0 starter voices:</p>
+<ul>
+<li><code>Gosia</code></li>
+<li><code>Darkman</code></li>
+<li><code>Kathleen</code></li>
+<li><code>Joe</code></li>
+<li><code>Kerstin</code></li>
+</ul>
+<p>User-installed profiles are stored here:</p>
+<ul>
+<li><code>%APPDATA%\nvda\maxlogicXTTSv2\voices</code></li>
+</ul>
+<p>Speech cache and logs are also stored outside the add-on package:</p>
+<ul>
+<li>Cache settings: <code>%APPDATA%\nvda\maxlogicXTTSv2\speech-cache-settings.json</code></li>
+<li>Persistent cache database: <code>%APPDATA%\nvda\maxlogicXTTSv2\cache\speech-cache.sqlite3</code></li>
+<li>Helper log: <code>%APPDATA%\nvda\maxlogicXTTSv2\logs\helper.log</code></li>
+</ul>
+<h2>Voice manager</h2>
+<p>Open:</p>
+<ul>
+<li><code>NVDA menu -&gt; MaxLogic XTTS v2 voice manager...</code></li>
+</ul>
+<p>Tabs:</p>
+<ul>
+<li><code>Installed</code>: user-installed and packaged voice profiles</li>
+<li><code>Browse Voices</code>: Hugging Face search, official downloadable profiles, and curated community profiles</li>
+<li><code>Extract Sample</code>: load a long recording, set markers, preview the selection, and save it as an XTTS profile</li>
+<li><code>Speech Cache</code>: cache settings, stats, clear, and compact actions</li>
+</ul>
+<p>Browse Voices:</p>
+<ul>
+<li>Use the Source selector to switch between Hugging Face search, the official catalog, and the community catalog</li>
+<li>Searches live Hugging Face model repos for XTTS-related entries that include playable sample audio</li>
+<li>Uses the sample audio as the install source, then lets XTTS build its own conditioning cache locally</li>
+<li>Keeps repo and license metadata in the installed profile metadata when available</li>
+<li>Filters out results that do not expose a usable sample file for preview/install</li>
+<li>The official source ships curated CC0 downloadable voices from OHF Voice</li>
+<li>The community source includes curated entries from Thorsten-Voice and Kyutai</li>
+</ul>
+<p>Direct local install:</p>
+<ul>
+<li>Audio files such as <code>.wav</code> and <code>.mp3</code> install as reference-audio profiles</li>
+<li><code>.pth</code> files install only if the helper can load them as a valid XTTS voice-conditioning file</li>
+<li>Invalid, corrupted, or unrelated PyTorch <code>.pth</code> files are rejected before installation</li>
+</ul>
+<p>Extract Sample editing:</p>
+<ul>
+<li>Source recordings, including <code>.m4a</code> files when ffmpeg is available, are decoded to a temporary WAV working file before editing, so the original recording is not changed</li>
+<li>Use Start marker and End marker to select interruptions, then use <code>Delete snippet</code> to remove that range from the working copy</li>
+<li>Use the 3-second marker preview buttons to listen before or after the start and end markers; <code>Preview selection</code> starts the marked range and stops it when pressed again</li>
+<li>The working copy is used for playback, preview, and saving the final XTTS profile</li>
+<li>Edit Current position directly to seek; the typed value is applied when the field loses focus or when Enter is pressed</li>
+<li>Temporary working files are deleted when another source recording is selected or the voice manager closes</li>
+<li>Large uncompressed <code>.wav</code> sources stream directly for responsive playback and seeking when the system media control cannot load them</li>
+<li>The panel shows whether the current selection is shorter than, longer than, or within the recommended 10 to 30 second XTTS sample range</li>
+<li>Use <code>Save current snippet as audio</code> to export the selected range as a <code>.wav</code>, or <code>Save edited audio as...</code> after deleting snippets to preserve the modified WAV working copy</li>
+<li>Keyboard shortcuts: <code>Ctrl+O</code> browse, <code>Ctrl+P</code> play or pause, <code>Ctrl+K</code> stop, <code>Ctrl+Left</code>/<code>Ctrl+Right</code> move 5 seconds, <code>Ctrl+Shift+Left</code>/<code>Ctrl+Shift+Right</code> move 30 seconds, <code>Ctrl+1</code> set start, <code>Ctrl+2</code> set end, <code>Ctrl+R</code> preview selection, <code>Ctrl+D</code> delete snippet, <code>Ctrl+E</code> save current snippet, <code>Ctrl+M</code> save edited audio, and <code>Ctrl+S</code> save profile</li>
+</ul>
+<h2>Supported languages</h2>
+<p>The bundled XTTS v2 integration normalizes NVDA language tags to the language set documented by Coqui XTTS v2:</p>
+<ul>
+<li><code>ar</code>, <code>cs</code>, <code>de</code>, <code>en</code>, <code>es</code>, <code>fr</code>, <code>hu</code>, <code>it</code>, <code>ja</code>, <code>ko</code>, <code>nl</code>, <code>pl</code>, <code>pt</code>, <code>ru</code>, <code>tr</code>, <code>zh-cn</code></li>
+</ul>
+<h2>Notes</h2>
+<ul>
+<li>This repository does not bundle the large XTTS model payload by default.</li>
+<li>The helper environment is pinned to the tested Coqui/PyTorch stack because newer Coqui releases were slower to first audio in local testing and the current <code>inference_stream</code> path hung.</li>
+<li>The Browse Voices tab consolidates Hugging Face search, the official catalog, and the community catalog under one source selector.</li>
+<li>The add-on can be managed from NVDA even when the synth itself is unavailable because the helper environment or voice profiles have not been installed yet.</li>
+</ul>
+<h2>Keyboard navigation and feedback</h2>
+<p>Use <code>Ctrl+Tab</code> and <code>Ctrl+Shift+Tab</code> to change tabs, then <code>Tab</code> and <code>Shift+Tab</code> to move between controls. Use arrow keys in lists and <code>Space</code> to check a voice for download. Button access keys are shown by Windows when you press <code>Alt</code>. <code>Escape</code> closes the manager when no operation is running.</p>
+<p>Optional pages load when selected. Downloads, cache operations, and voice installation run in the background with progress feedback. Status and voice details are read-only text fields: focus them to review or copy their contents. The sample editor and cache page scroll to keep focused controls in view. Closing waits while an audio edit or save is running.</p>
+<h2>Add-on identity</h2>
+<ul>
+<li>Add-on ID: <code>maxlogicXTTSv2</code></li>
+<li>Synth driver: <code>maxlogic_xtts_v2</code></li>
+<li>Display name: <code>MaxLogic XTTS v2</code></li>
+</ul>
+<h2>NVDA compatibility and checks</h2>
+<p>This release targets NVDA 2026.2. The minimum supported version is 2024.1.</p>
+<p>Run the repository checks with <code>python -m unittest discover -s tests -v</code>. Runtime synthesis and physical keyboard/speech checks are separate from these tests.</p>
 </body>
 </html>

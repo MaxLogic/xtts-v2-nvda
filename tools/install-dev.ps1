@@ -24,19 +24,7 @@ if (Test-Path $TargetRoot) {
 
 New-Item -ItemType Directory -Path $TargetRoot | Out-Null
 
-$manifest = @"
-name = maxlogicXTTSv2
-summary = "MaxLogic XTTS v2"
-description = """An XTTS v2 speech synthesizer add-on for NVDA with profile management, previews, and speech caching."""
-author = "MaxLogic"
-url = None
-version = 0.1.1
-docFileName = readme.html
-minimumNVDAVersion = 2024.1
-lastTestedNVDAVersion = 2026.1
-changelog = """Tested with NVDA 2026.1 and updated add-on compatibility metadata."""
-updateChannel = None
-"@
+$manifest = Get-Content -LiteralPath (Join-Path $sourceAddonRoot "manifest.ini") -Raw
 
 Set-Content -Path (Join-Path $TargetRoot "manifest.ini") -Value $manifest -Encoding UTF8
 Copy-Item $sourceInstallTasks (Join-Path $TargetRoot "installTasks.py") -Force

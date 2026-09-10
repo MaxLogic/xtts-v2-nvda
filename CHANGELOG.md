@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.2
+
+- Fix manager startup blocking, load optional pages on demand, and improve keyboard access for NVDA 2026.2.
+- Keep helper startup locks off the NVDA UI thread and start preview synthesis only when needed.
+- Run slow manager operations in workers; defer optional pages until selected.
+- Add readable status fields, accessible voice checklists, scrolling sample controls, and safer deletion confirmations.
+- Let cache-only helpers start without NumPy or the synthesis engine.
+
 ## 0.1.1
 
 - Tested with NVDA 2026.1 and updated add-on compatibility metadata.

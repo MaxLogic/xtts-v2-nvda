@@ -119,8 +119,20 @@ The bundled XTTS v2 integration normalizes NVDA language tags to the language se
 - The Browse Voices tab consolidates Hugging Face search, the official catalog, and the community catalog under one source selector.
 - The add-on can be managed from NVDA even when the synth itself is unavailable because the helper environment or voice profiles have not been installed yet.
 
+## Keyboard navigation and feedback
+
+Use `Ctrl+Tab` and `Ctrl+Shift+Tab` to change tabs, then `Tab` and `Shift+Tab` to move between controls. Use arrow keys in lists and `Space` to check a voice for download. Button access keys are shown by Windows when you press `Alt`. `Escape` closes the manager when no operation is running.
+
+Optional pages load when selected. Downloads, cache operations, and voice installation run in the background with progress feedback. Status and voice details are read-only text fields: focus them to review or copy their contents. The sample editor and cache page scroll to keep focused controls in view. Closing waits while an audio edit or save is running.
+
 ## Add-on identity
 
 - Add-on ID: `maxlogicXTTSv2`
 - Synth driver: `maxlogic_xtts_v2`
 - Display name: `MaxLogic XTTS v2`
+
+## NVDA compatibility and checks
+
+This release targets NVDA 2026.2. The minimum supported version is 2024.1.
+
+Run the repository checks with `python -m unittest discover -s tests -v`. Runtime synthesis and physical keyboard/speech checks are separate from these tests.

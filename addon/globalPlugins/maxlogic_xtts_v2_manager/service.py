@@ -298,12 +298,6 @@ def _invalidate_preview_helper(reason):
 
 def prepare_preview_runtime_async():
 	global _preview_helper_thread
-	with _preview_helper_lock:
-		if _preview_helper is not None:
-			return False
-		if _preview_helper_thread is not None and _preview_helper_thread.is_alive():
-			return False
-
 	def _worker():
 		global _preview_helper_thread
 		try:
@@ -315,14 +309,24 @@ def prepare_preview_runtime_async():
 			with _preview_helper_lock:
 				_preview_helper_thread = None
 
-	thread = threading.Thread(
-		target=_worker,
-		name="MaxLogicXTTSV2PreviewWarmup",
-		daemon=True,
-	)
-	with _preview_helper_lock:
+	# Another page can request warmup while helper startup owns this lock.
+	# Never make the NVDA GUI thread wait for the external process.
+	if not _preview_helper_lock.acquire(blocking=False):
+		return False
+	try:
+		if _preview_helper is not None:
+			return False
+		if _preview_helper_thread is not None and _preview_helper_thread.is_alive():
+			return False
+		thread = threading.Thread(
+			target=_worker,
+			name="MaxLogicXTTSV2PreviewWarmup",
+			daemon=True,
+		)
 		_preview_helper_thread = thread
-	thread.start()
+		thread.start()
+	finally:
+		_preview_helper_lock.release()
 	return True
 
 
@@ -765,6 +769,10 @@ def extract_sample_to_voice(
 
 
 def _get_cache_helper_client():
+	synth = _get_active_maxlogic_synth()
+	helper = getattr(synth, "_engine", None)
+	if isinstance(helper, HelperEngineClient):
+		return helper, False
 	helper = HelperEngineClient(_package_root(), log, helper_mode="cache", skip_prewarm=True)
 	return helper, True
 
