@@ -170,6 +170,12 @@ def main():
 						}
 					)
 					continue
+				if op == "clone_voice":
+					if engine is None:
+						raise RuntimeError("Cloning is unavailable in cache-only helper mode")
+					engine.clone_voice(request["reference_paths"], request["conditioning_path"], request["options"])
+					_send({"ok": True, "id": request_id})
+					continue
 				if op == "validate_conditioning":
 					if engine is None:
 						raise RuntimeError("Conditioning validation is unavailable in cache-only helper mode")

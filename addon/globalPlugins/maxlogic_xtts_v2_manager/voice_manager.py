@@ -17,7 +17,8 @@ except Exception:
 	wxmedia = None
 
 from . import service
-from ._ui import DeferredPanel, StatusText, load_async, run_busy
+from .clone_voice import CloneVoicePanel
+from ._ui import DeferredPanel, StatusText, load_async, report_loading, run_busy
 
 
 GENDER_FILTERS = [
@@ -156,6 +157,7 @@ class InstalledVoicesPanel(wx.Panel):
 		self._preview_playing = False
 		self._preview_request_id = 0
 		self._refresh_generation = 0
+		self._preview_source_list = None
 		sizer = wx.BoxSizer(wx.VERTICAL)
 		setup_box = wx.StaticBoxSizer(wx.VERTICAL, self, _("Getting started"))
 		self.setup_status = wx.StaticText(self, label=_("Loading installed voices..."))
@@ -191,17 +193,20 @@ class InstalledVoicesPanel(wx.Panel):
 		button_row = wx.WrapSizer(wx.HORIZONTAL)
 		self.install_button = wx.Button(self, label=_("&Install from file..."))
 		self.remove_button = wx.Button(self, label=_("&Remove selected voice"))
-		self.preview_button = wx.Button(self, label=_("&Play sample"))
+		self.preview_button = wx.Button(self, label=_("&Play sample (Ctrl+P)"))
+		self.folder_button = wx.Button(self, label=_("&Open voice folder"))
 		self.refresh_button = wx.Button(self, label=_("Re&fresh profiles"))
 		button_row.Add(self.install_button, 0, wx.ALL, 5)
 		button_row.Add(self.remove_button, 0, wx.ALL, 5)
 		button_row.Add(self.preview_button, 0, wx.ALL, 5)
+		button_row.Add(self.folder_button, 0, wx.ALL, 5)
 		button_row.Add(self.refresh_button, 0, wx.ALL, 5)
 		sizer.Add(button_row, 0, wx.ALL, 0)
 		self.SetSizer(sizer)
 		self.Bind(wx.EVT_BUTTON, self.on_install, self.install_button)
 		self.Bind(wx.EVT_BUTTON, self.on_remove, self.remove_button)
 		self.Bind(wx.EVT_BUTTON, self.on_play_sample, self.preview_button)
+		self.Bind(wx.EVT_BUTTON, self.on_open_voice_folder, self.folder_button)
 		self.Bind(wx.EVT_BUTTON, lambda evt: self.refresh_entries(), self.refresh_button)
 		self.Bind(wx.EVT_BUTTON, self.on_setup_runtime, self.setup_button)
 		self.Bind(wx.EVT_LISTBOX, self.on_select_user_voice, self.voice_list)
@@ -209,9 +214,10 @@ class InstalledVoicesPanel(wx.Panel):
 		self.refresh_entries()
 
 	def _update_preview_button_state(self, is_loading=False):
-		self.preview_button.SetLabel(_("&Stop") if self._preview_playing else _("&Play sample"))
+		self.preview_button.SetLabel(_("Sto&p sample (Ctrl+P)") if self._preview_playing else _("&Play sample (Ctrl+P)"))
 		can_start = (not is_loading) and self._selected_record() is not None and not self._preview_in_progress
 		self.preview_button.Enable(self._preview_playing or can_start)
+		self.folder_button.Enable((not is_loading) and (not self._preview_in_progress) and self._selected_record() is not None)
 
 	def _update_preview_lock_state(self, is_loading=False):
 		locked = self._preview_in_progress or is_loading
@@ -223,6 +229,7 @@ class InstalledVoicesPanel(wx.Panel):
 		self.remove_button.Enable((not locked) and bool(self._user_voices))
 
 	def _set_loading_state(self, is_loading, message=None):
+		report_loading(self, is_loading, message)
 		self.preview_language_choice.Enable(not is_loading and not self._preview_in_progress)
 		if is_loading and message:
 			self.setup_status.SetLabel(message)
@@ -423,6 +430,24 @@ class InstalledVoicesPanel(wx.Panel):
 			message += "\n" + _("Restart NVDA to refresh the current synth.")
 		gui.messageBox(message, _("Voice removed"), wx.OK | wx.ICON_INFORMATION)
 
+	def on_open_voice_folder(self, event):
+		record = self._selected_record()
+		if record is None:
+			return
+		try:
+			folder = os.path.dirname(os.path.abspath(record.profile_path))
+			if not os.path.isdir(folder):
+				raise FileNotFoundError(_("The voice folder no longer exists."))
+			os.startfile(folder)
+		except Exception as error:
+			gui.messageBox(_("Could not open the voice folder. {error}").format(error=error), _("Open voice folder"), wx.OK | wx.ICON_ERROR, self)
+
+	def _restore_preview_focus(self):
+		target = self._preview_source_list
+		if target and self.IsShownOnScreen() and self.GetTopLevelParent().IsActive():
+			target.SetFocus()
+
+
 	def on_play_sample(self, event):
 		if self._preview_playing:
 			self._preview_request_id += 1
@@ -433,6 +458,9 @@ class InstalledVoicesPanel(wx.Panel):
 			self.setup_status.SetLabel(service.get_setup_status()["message"])
 			self._update_preview_lock_state()
 			self._update_preview_button_state()
+			self._restore_preview_focus()
+			return
+		if self._preview_in_progress or not self.preview_button.IsEnabled():
 			return
 		record = self._selected_record()
 		if record is None:
@@ -442,6 +470,7 @@ class InstalledVoicesPanel(wx.Panel):
 				wx.OK | wx.ICON_INFORMATION,
 			)
 			return
+		self._preview_source_list = self.voice_list if self.voice_list.GetSelection() != wx.NOT_FOUND else self.builtin_list
 		self._preview_in_progress = True
 		self._preview_playing = False
 		self._preview_request_id += 1
@@ -449,11 +478,24 @@ class InstalledVoicesPanel(wx.Panel):
 		self._update_preview_lock_state()
 		self._update_preview_button_state()
 		self.preview_language_choice.Enable(False)
-		status_message = _("Generating sample for {name}. The first preview can take around a minute.").format(
+		status_message = _("Preparing sample for {name}...").format(
 			name=record.display_name,
 		)
 		self.setup_status.SetLabel(status_message)
 		ui.message(status_message)
+
+		def _on_progress(phase):
+			if not self or self.IsBeingDeleted() or request_id != self._preview_request_id:
+				return
+			messages = {
+				"cached": _("Playing saved sample for {name}."),
+				"loading_model": _("Starting the speech engine for {name}. The first uncached preview may take a minute."),
+				"generating": _("Generating sample for {name}. Playback will start as audio becomes ready."),
+			}
+			message = messages[phase].format(name=record.display_name)
+			self.setup_status.SetLabel(message)
+			if self.IsShownOnScreen():
+				ui.message(message)
 
 		def _on_started():
 			if not self or self.IsBeingDeleted() or request_id != self._preview_request_id:
@@ -482,13 +524,15 @@ class InstalledVoicesPanel(wx.Panel):
 					wx.OK | wx.ICON_ERROR,
 				)
 				return
-			self.setup_status.SetLabel(service.get_setup_status()["message"])
+			self.setup_status.SetLabel(_("Sample finished. Choose another voice and press Ctrl+P to play it."))
+			self._restore_preview_focus()
 
 		service.play_installed_voice_sample(
 			record,
 			on_complete=_on_complete,
 			preview_language=self._selected_preview_language(),
 			on_playback_started=_on_started,
+			on_progress=_on_progress,
 		)
 
 
@@ -660,6 +704,7 @@ class CatalogVoicesPanel(wx.Panel):
 		self.language_choice.SetSelection(target_index)
 
 	def _set_loading_state(self, is_loading, message=None):
+		report_loading(self, is_loading, message)
 		self.search_text.Enable(not is_loading)
 		self.gender_choice.Enable(not is_loading)
 		self.language_choice.Enable(not is_loading)
@@ -1136,6 +1181,7 @@ class HuggingFaceSearchPanel(wx.Panel):
 		self.language_choice.SetSelection(target_index)
 
 	def _set_loading_state(self, is_loading, message=None):
+		report_loading(self, is_loading, message)
 		self.search_text.Enable(not is_loading)
 		self.search_button.Enable(not is_loading)
 		self.gender_choice.Enable(not is_loading)
@@ -2698,6 +2744,7 @@ class SpeechCachePanel(ScrolledPanel):
 		self.refresh_from_runtime()
 
 	def _set_loading_state(self, is_loading, message=None):
+		report_loading(self, is_loading, message)
 		self.enable_checkbox.Enable(not is_loading)
 		self.mode_choice.Enable(not is_loading)
 		self.max_size_ctrl.Enable(not is_loading)
@@ -2933,21 +2980,59 @@ class MaxLogicVoiceManagerDialog(wx.Dialog):
 		self.extract_panel = DeferredPanel(self.notebook, lambda parent: ExtractSamplePanel(parent, on_change=self.refresh_all))
 		self.cache_panel = DeferredPanel(self.notebook, SpeechCachePanel)
 		self.notebook.AddPage(self.installed_panel, _("Installed"))
+		self.clone_panel = DeferredPanel(self.notebook, lambda parent: CloneVoicePanel(parent, on_change=self.refresh_all))
+		self.notebook.AddPage(self.clone_panel, _("Clone Voice"))
 		self.notebook.AddPage(self.browse_panel, _("Browse Voices"))
 		self.notebook.AddPage(self.extract_panel, _("Extract Sample"))
 		self.notebook.AddPage(self.cache_panel, _("Speech Cache"))
 		self.notebook.Bind(wx.EVT_NOTEBOOK_PAGE_CHANGED, self.on_page_changed)
 		self.Bind(wx.EVT_CLOSE, self.on_close)
 		main_sizer.Add(self.notebook, 1, wx.EXPAND | wx.LEFT | wx.RIGHT, 10)
+		self.loading_status = StatusText(self, label=_("Loading installed voices..."), name=_("Page status"))
+		main_sizer.Add(self.loading_status, 0, wx.EXPAND | wx.LEFT | wx.RIGHT, 10)
+		self._last_loading_message = None
 		button_sizer = self.CreateButtonSizer(wx.CLOSE)
 		main_sizer.Add(button_sizer, 0, wx.EXPAND | wx.ALL, 10)
 		self.SetSizer(main_sizer)
 		self.Layout()
 		self.SetEscapeId(wx.ID_CLOSE)
 		self.Bind(wx.EVT_BUTTON, lambda event: self.Close(), id=wx.ID_CLOSE)
+		self.Bind(wx.EVT_CHAR_HOOK, self.on_char_hook)
 		self.notebook.SetFocus()
 		self.CentreOnScreen()
 		self._log_active_page()
+
+	def on_char_hook(self, event):
+		if (self.notebook.GetCurrentPage() is self.installed_panel
+				and event.GetKeyCode() == ord("P")
+				and event.GetModifiers() == wx.MOD_CONTROL):
+			self.installed_panel.on_play_sample(event)
+			return
+		event.Skip()
+
+
+	def refresh_loading_feedback(self):
+		if not self or self.IsBeingDeleted() or not hasattr(self, "loading_status"):
+			return
+		def pending(window):
+			message = getattr(window, "_loading_message", None)
+			if message:
+				return message
+			for child in window.GetChildren():
+				if child.IsShown():
+					message = pending(child)
+					if message:
+						return message
+			return None
+		message = pending(self.notebook.GetCurrentPage())
+		self.loading_status.SetLabel(message or _("Ready."))
+		if message != self._last_loading_message and self.IsShownOnScreen() and self.IsActive():
+			if message:
+				ui.message(message)
+			elif self._last_loading_message:
+				ui.message(_("Page ready."))
+		self._last_loading_message = message
+
 
 	def refresh_all(self):
 		self.installed_panel.refresh_entries()
@@ -2991,6 +3076,7 @@ class MaxLogicVoiceManagerDialog(wx.Dialog):
 		page = self.notebook.GetCurrentPage()
 		if isinstance(page, DeferredPanel):
 			page.load()
+		self.refresh_loading_feedback()
 		self._log_active_page()
 		event.Skip()
 

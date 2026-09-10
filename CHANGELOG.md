@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.1.4
+
+- Add a dedicated Clone Voice tab with multiple reference recordings, a name and default language.
+- Save computed voice conditioning before publishing the profile; keep existing voices on failure or duplicate names.
+- Add reference normalization and advanced reference/conditioning length settings, plus a preview of the created voice.
+
+## 0.1.3
+
+- Show and announce the selected page's loading state and completion.
+- Add Open voice folder and Ctrl+P for sample playback on Installed Voices.
+- Return focus to the originating voice list after a sample finishes.
+- Stream uncached installed-voice previews and reuse complete preview WAV files on disk.
+- Distinguish cached playback, speech-engine startup, and sample generation in status feedback.
+
 ## 0.1.2
 
 - Fix manager startup blocking, load optional pages on demand, and improve keyboard access for NVDA 2026.2.

@@ -6,6 +6,7 @@ import shutil
 import subprocess
 import tempfile
 import threading
+import time
 import hashlib
 import wave
 
@@ -115,6 +116,13 @@ def _load_sample_texts():
 		with open(_sample_text_path(), "r", encoding="utf-8") as handle:
 			_sample_text_cache = json.load(handle)
 	return _sample_text_cache
+
+
+def clone_voice(reference_paths, name, language, options):
+	from synthDrivers.maxlogic_xtts_v2._cloning import create_voice
+	def clone(paths, target, settings):
+		_get_preview_helper(skip_prewarm=True).clone_voice(paths, target, settings)
+	return create_voice(reference_paths, name, language, options, clone)
 
 
 def get_sample_text(language):
@@ -251,6 +259,42 @@ def _play_preview_audio(audio_bytes, sample_rate, generation, on_playback_starte
 		if generation != _preview_generation:
 			return "superseded"
 	return "completed"
+
+
+def _play_preview_stream(chunks, sample_rate, generation, cache_payload, on_playback_started=None):
+	"""Play each generated chunk, but cache only the complete utterance.
+
+	A stopped preview is still drained so the helper protocol stays synchronized
+	and the completed WAV is available for the next audition.
+	"""
+	parts = []
+	player = None
+	started = False
+	for chunk in chunks:
+		audio = bytes(chunk)
+		if not audio:
+			continue
+		parts.append(audio)
+		with _preview_lock:
+			if generation != _preview_generation:
+				continue
+			player = _get_preview_player(sample_rate)
+			if not started:
+				player.stop()
+			player.feed(audio)
+		if not started:
+			started = True
+			if on_playback_started is not None:
+				wx.CallAfter(on_playback_started)
+	if not parts:
+		raise RuntimeError("The speech engine returned an empty preview.")
+	try:
+		_write_preview_wav_cache(cache_payload, sample_rate, b"".join(parts))
+	except Exception:
+		log.warning("MaxLogic XTTS v2 preview WAV cache write failed", exc_info=True)
+	if player is not None and generation == _preview_generation:
+		player.idle()
+	return "completed" if generation == _preview_generation else "superseded"
 
 
 def stop_preview():
@@ -947,8 +991,18 @@ def _build_catalog_preview_cache_payload(entry, language, sample_text):
 	}
 
 
-def play_installed_voice_sample(record, on_complete=None, preview_language=None, on_playback_started=None):
+def play_installed_voice_sample(record, on_complete=None, preview_language=None, on_playback_started=None, on_progress=None):
 	generation = _begin_preview()
+	start_time = time.perf_counter()
+
+	def progress(phase):
+		if on_progress is not None:
+			wx.CallAfter(on_progress, phase)
+
+	def started():
+		log.info("MaxLogic XTTS v2 preview first audio. voice=%s elapsedMs=%.1f", record.voice_id, (time.perf_counter() - start_time) * 1000)
+		if on_playback_started is not None:
+			on_playback_started()
 
 	def _finish(status, error_message=None):
 		if on_complete is not None:
@@ -960,10 +1014,16 @@ def play_installed_voice_sample(record, on_complete=None, preview_language=None,
 			sample_text = get_sample_text(language)
 			cache_payload = _build_installed_preview_cache_payload(record, language, sample_text)
 			cached_preview = _read_preview_wav_cache(cache_payload)
+			if generation != _preview_generation:
+				_finish("superseded")
+				return
+			log.info("MaxLogic XTTS v2 preview cache lookup. voice=%s cache=%s elapsedMs=%.1f", record.voice_id, "hit" if cached_preview is not None else "miss", (time.perf_counter() - start_time) * 1000)
 			if cached_preview is not None:
+				progress("cached")
 				audio_bytes = cached_preview["audioBytes"]
 				sample_rate = cached_preview["sampleRate"]
 			else:
+				progress("loading_model")
 				sample_rate = 24000
 				try:
 					helper = _get_preview_helper(skip_prewarm=True)
@@ -986,12 +1046,11 @@ def play_installed_voice_sample(record, on_complete=None, preview_language=None,
 							record.voice_id,
 						)
 						helper.reload_voices(preferred_voice=record.voice_id)
-					audio_bytes = helper.synthesize_to_int16(
-						sample_text,
-						voice=record.voice_id,
-						language=language,
-					).tobytes()
-					sample_rate = helper.sample_rate
+					progress("generating")
+					chunks = helper.stream_synthesize_to_int16(sample_text, voice=record.voice_id, language=language)
+					status = _play_preview_stream(chunks, helper.sample_rate, generation, cache_payload, started)
+					_finish(status)
+					return
 				try:
 					_write_preview_wav_cache(cache_payload, sample_rate, audio_bytes)
 				except Exception:
@@ -1000,7 +1059,7 @@ def play_installed_voice_sample(record, on_complete=None, preview_language=None,
 				audio_bytes,
 				sample_rate,
 				generation,
-				on_playback_started=on_playback_started,
+				on_playback_started=started,
 			)
 			if status == "completed":
 				_finish("completed", None)

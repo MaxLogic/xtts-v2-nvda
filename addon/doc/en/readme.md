@@ -9,7 +9,7 @@ It is based on the `kokoro-tts-nvda` project structure, but the speech runtime i
 - Separate NVDA synth: `MaxLogic XTTS v2`
 - One-click runtime setup from the voice manager
 - Built-in voice manager available from the NVDA menu
-- Installed, Browse Voices, Extract Sample, and Speech Cache tabs
+- Installed, Clone Voice, Browse Voices, Extract Sample, and Speech Cache tabs
 - Five bundled CC0 starter voices
 - Curated on-demand voice downloads from legal upstream sources
 - Unified voice browser for Hugging Face search, official profiles, and community profiles
@@ -73,6 +73,7 @@ Open:
 Tabs:
 
 - `Installed`: user-installed and packaged voice profiles
+- `Clone Voice`: combine reference recordings and save voice conditioning with adjustable settings
 - `Browse Voices`: Hugging Face search, official downloadable profiles, and curated community profiles
 - `Extract Sample`: load a long recording, set markers, preview the selection, and save it as an XTTS profile
 - `Speech Cache`: cache settings, stats, clear, and compact actions
@@ -125,6 +126,16 @@ Use `Ctrl+Tab` and `Ctrl+Shift+Tab` to change tabs, then `Tab` and `Shift+Tab` t
 
 Optional pages load when selected. Downloads, cache operations, and voice installation run in the background with progress feedback. Status and voice details are read-only text fields: focus them to review or copy their contents. The sample editor and cache page scroll to keep focused controls in view. Closing waits while an audio edit or save is running.
 
+### Installed voice previews
+
+Select a voice in either installed-voice list and press `Ctrl+P` or `Alt+P` to play its sample. Press the shortcut again during playback to stop it. When playback finishes, focus returns to the same list, so you can select the next voice with an arrow key and press `Ctrl+P` again. Focus is not moved if you switched to another application or tab.
+
+Use **Open voice folder** (`Alt+O`) to open the selected profile's containing folder in File Explorer. This works for user-installed and packaged profiles.
+
+The **Page status** field reports loading for the selected tab. NVDA announces loading and completion while the manager is active.
+
+Installed-voice previews are cached as complete WAV files under `%APPDATA%\nvda\maxlogicXTTSv2\cache\preview-wav`. A replay with the same voice files, sample text, and language uses that file without starting the speech model. Changing the voice files or preview language produces a new cache entry. The first uncached preview still needs to load the XTTS model; after startup it streams audio as it becomes available. If playback is stopped, generation may finish in the background to complete the cached sample.
+
 ## Add-on identity
 
 - Add-on ID: `maxlogicXTTSv2`
@@ -136,3 +147,15 @@ Optional pages load when selected. Downloads, cache operations, and voice instal
 This release targets NVDA 2026.2. The minimum supported version is 2024.1.
 
 Run the repository checks with `python -m unittest discover -s tests -v`. Runtime synthesis and physical keyboard/speech checks are separate from these tests.
+
+### Clone Voice
+
+Open **Clone Voice**, add one or more clear recordings of the same speaker, then enter a unique voice name and choose the default preview language. Use **Extract Sample** first when a recording needs trimming. **Create voice** computes and saves the voice conditioning and copies the recordings into the user voice profile. Existing voices are preserved; choose another name if it is already used. After creation, **Play created voice sample** previews the saved profile.
+
+Reference volume normalization is optional and off by default. **Show advanced settings** reveals:
+
+- **Maximum seconds per recording** (default 30): how much of each recording XTTS reads.
+- **Total conditioning seconds** (default 6): how much of the joined recordings is used for GPT conditioning.
+- **Conditioning chunk seconds** (default 6): chunk size within that conditioning audio; it must not exceed the total.
+
+Longer values do not guarantee better results. These settings affect voice conditioning; they are not speaking-speed or synthesis-temperature controls. Model startup can take tens of seconds. Creation runs in a worker while NVDA remains responsive, and the status dialog closes when it finishes. The created profile appears in Installed, where its folder can be opened.

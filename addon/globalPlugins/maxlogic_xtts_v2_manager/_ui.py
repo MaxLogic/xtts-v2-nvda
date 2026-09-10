@@ -41,6 +41,13 @@ class StatusText(wx.TextCtrl):
 		return self.GetValue()
 
 
+def report_loading(owner, is_loading, message=None):
+	owner._loading_message = (message or _("Loading...")) if is_loading else None
+	dialog = wx.GetTopLevelParent(owner)
+	if hasattr(dialog, "refresh_loading_feedback"):
+		wx.CallAfter(dialog.refresh_loading_feedback)
+
+
 class DeferredPanel(wx.Panel):
 	"""Construct an optional page only after the user selects it."""
 	def __init__(self, parent, factory):
@@ -61,7 +68,12 @@ class DeferredPanel(wx.Panel):
 		if self.content is not None or self.pending:
 			return
 		self.pending = True
-		wx.CallAfter(self._build)
+		parent = self.GetParent()
+		index = parent.FindPage(self) if isinstance(parent, wx.Notebook) else wx.NOT_FOUND
+		name = parent.GetPageText(index) if index != wx.NOT_FOUND else _("page")
+		report_loading(self, True, _("Loading {name}...").format(name=name))
+		# Allow the loading field to paint and NVDA to announce it before construction.
+		wx.CallLater(50, self._build)
 
 	def _build(self):
 		if not self or self.IsBeingDeleted():
@@ -75,10 +87,12 @@ class DeferredPanel(wx.Panel):
 			self.hint.SetLabel(_("This page could not be opened. {error}").format(error=error))
 			self.retry.Show()
 			self.pending = False
+			report_loading(self, False)
 			self.Layout()
 			if self.IsShownOnScreen():
 				ui.message(self.hint.GetLabel())
 			return
+		report_loading(self, False)
 		self.hint.Hide()
 		self.retry.Hide()
 		self.GetSizer().Add(self.content, 1, wx.EXPAND)

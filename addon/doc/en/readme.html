@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
 <link rel="stylesheet" type="text/css" href="../style.css" media="screen">
-<title>MaxLogic XTTS v2 0.1.2</title>
+<title>MaxLogic XTTS v2 0.1.4</title>
 </head>
 <body>
 <h1>MaxLogic XTTS v2 for NVDA</h1>
@@ -14,7 +14,7 @@
 <li>Separate NVDA synth: <code>MaxLogic XTTS v2</code></li>
 <li>One-click runtime setup from the voice manager</li>
 <li>Built-in voice manager available from the NVDA menu</li>
-<li>Installed, Browse Voices, Extract Sample, and Speech Cache tabs</li>
+<li>Installed, Clone Voice, Browse Voices, Extract Sample, and Speech Cache tabs</li>
 <li>Five bundled CC0 starter voices</li>
 <li>Curated on-demand voice downloads from legal upstream sources</li>
 <li>Unified voice browser for Hugging Face search, official profiles, and community profiles</li>
@@ -70,6 +70,7 @@
 <p>Tabs:</p>
 <ul>
 <li><code>Installed</code>: user-installed and packaged voice profiles</li>
+<li><code>Clone Voice</code>: combine reference recordings and save voice conditioning with adjustable settings</li>
 <li><code>Browse Voices</code>: Hugging Face search, official downloadable profiles, and curated community profiles</li>
 <li><code>Extract Sample</code>: load a long recording, set markers, preview the selection, and save it as an XTTS profile</li>
 <li><code>Speech Cache</code>: cache settings, stats, clear, and compact actions</li>
@@ -118,6 +119,11 @@
 <h2>Keyboard navigation and feedback</h2>
 <p>Use <code>Ctrl+Tab</code> and <code>Ctrl+Shift+Tab</code> to change tabs, then <code>Tab</code> and <code>Shift+Tab</code> to move between controls. Use arrow keys in lists and <code>Space</code> to check a voice for download. Button access keys are shown by Windows when you press <code>Alt</code>. <code>Escape</code> closes the manager when no operation is running.</p>
 <p>Optional pages load when selected. Downloads, cache operations, and voice installation run in the background with progress feedback. Status and voice details are read-only text fields: focus them to review or copy their contents. The sample editor and cache page scroll to keep focused controls in view. Closing waits while an audio edit or save is running.</p>
+<h3>Installed voice previews</h3>
+<p>Select a voice in either installed-voice list and press <code>Ctrl+P</code> or <code>Alt+P</code> to play its sample. Press the shortcut again during playback to stop it. When playback finishes, focus returns to the same list, so you can select the next voice with an arrow key and press <code>Ctrl+P</code> again. Focus is not moved if you switched to another application or tab.</p>
+<p>Use <strong>Open voice folder</strong> (<code>Alt+O</code>) to open the selected profile's containing folder in File Explorer. This works for user-installed and packaged profiles.</p>
+<p>The <strong>Page status</strong> field reports loading for the selected tab. NVDA announces loading and completion while the manager is active.</p>
+<p>Installed-voice previews are cached as complete WAV files under <code>%APPDATA%\nvda\maxlogicXTTSv2\cache\preview-wav</code>. A replay with the same voice files, sample text, and language uses that file without starting the speech model. Changing the voice files or preview language produces a new cache entry. The first uncached preview still needs to load the XTTS model; after startup it streams audio as it becomes available. If playback is stopped, generation may finish in the background to complete the cached sample.</p>
 <h2>Add-on identity</h2>
 <ul>
 <li>Add-on ID: <code>maxlogicXTTSv2</code></li>
@@ -127,5 +133,14 @@
 <h2>NVDA compatibility and checks</h2>
 <p>This release targets NVDA 2026.2. The minimum supported version is 2024.1.</p>
 <p>Run the repository checks with <code>python -m unittest discover -s tests -v</code>. Runtime synthesis and physical keyboard/speech checks are separate from these tests.</p>
+<h3>Clone Voice</h3>
+<p>Open <strong>Clone Voice</strong>, add one or more clear recordings of the same speaker, then enter a unique voice name and choose the default preview language. Use <strong>Extract Sample</strong> first when a recording needs trimming. <strong>Create voice</strong> computes and saves the voice conditioning and copies the recordings into the user voice profile. Existing voices are preserved; choose another name if it is already used. After creation, <strong>Play created voice sample</strong> previews the saved profile.</p>
+<p>Reference volume normalization is optional and off by default. <strong>Show advanced settings</strong> reveals:</p>
+<ul>
+<li><strong>Maximum seconds per recording</strong> (default 30): how much of each recording XTTS reads.</li>
+<li><strong>Total conditioning seconds</strong> (default 6): how much of the joined recordings is used for GPT conditioning.</li>
+<li><strong>Conditioning chunk seconds</strong> (default 6): chunk size within that conditioning audio; it must not exceed the total.</li>
+</ul>
+<p>Longer values do not guarantee better results. These settings affect voice conditioning; they are not speaking-speed or synthesis-temperature controls. Model startup can take tens of seconds. Creation runs in a worker while NVDA remains responsive, and the status dialog closes when it finishes. The created profile appears in Installed, where its folder can be opened.</p>
 </body>
 </html>

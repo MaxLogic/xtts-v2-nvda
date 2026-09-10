@@ -241,6 +241,26 @@ class XTTSV2Engine(object):
 	def close(self):
 		self.tts = None
 
+	def clone_voice(self, reference_paths, conditioning_path, options):
+		try:
+			from ._cloning import validate_options
+		except ImportError:
+			from _cloning import validate_options
+		import torch
+		options = validate_options(options)
+		paths, cleanup_root = self._prepare_reference_paths(reference_paths)
+		try:
+			gpt, speaker = self.tts.synthesizer.tts_model.get_conditioning_latents(audio_path=paths, **options)
+			if not torch.isfinite(gpt).all() or not torch.isfinite(speaker).all():
+				raise VoiceStoreError("Reference recordings produced invalid conditioning. Check for silent or damaged audio.")
+			# This is a required profile artifact, not a best-effort cache write.
+			torch.save({"gpt_conditioning_latents": gpt.detach().cpu(),
+				"speaker_embedding": speaker.detach().cpu()}, conditioning_path)
+			self.validate_conditioning_file(conditioning_path)
+		finally:
+			if cleanup_root:
+				shutil.rmtree(cleanup_root, ignore_errors=True)
+
 	def validate_conditioning_file(self, conditioning_path):
 		if not conditioning_path or not os.path.isfile(conditioning_path):
 			raise VoiceStoreError("XTTS conditioning file not found: %s" % conditioning_path)

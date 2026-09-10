@@ -336,6 +336,10 @@ class HelperEngineClient(object):
 		)
 		return memoryview(base64.b64decode(response["audio_b64"]))
 
+	def clone_voice(self, reference_paths, conditioning_path, options):
+		self._request({"op": "clone_voice", "reference_paths": reference_paths,
+			"conditioning_path": conditioning_path, "options": options})
+
 	def validate_conditioning_file(self, conditioning_path):
 		response = self._request(
 			{
