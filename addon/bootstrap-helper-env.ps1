@@ -124,7 +124,11 @@ Write-Host "Installing the pinned PyTorch runtime for provider '$resolvedProvide
 & $helperPython -m pip install --upgrade "torch==2.11.0" "torchaudio==2.11.0" --index-url $torchIndexUrl
 
 Write-Host "Installing the pinned Coqui TTS helper runtime"
-& $helperPython -m pip install --upgrade "numpy<2" "transformers==4.46.1" "coqui-tts==0.24.3"
+# Coqui 0.27 uses coqpit-config; the original coqpit distribution conflicts with it.
+& $helperPython -m pip uninstall -y coqpit
+if ($LASTEXITCODE -ne 0) { throw "Could not remove the obsolete coqpit package." }
+& $helperPython -m pip install --upgrade "numpy<2" "transformers==4.57.6" "coqui-tts==0.27.5" "torchcodec==0.16.0"
+if ($LASTEXITCODE -ne 0) { throw "Could not install the XTTS helper runtime." }
 
 Write-Host "Preparing XTTS v2 model cache"
 $env:COQUI_TOS_AGREED = "1"
@@ -172,11 +176,11 @@ print(json.dumps(payload))
 Write-Host ""
 Write-Host "Helper environment ready."
 Write-Host "Python: $helperPython"
-Write-Host "This installs the pinned Coqui TTS 0.24.3 runtime tested with XTTS streaming."
+Write-Host "This installs the pinned Coqui TTS 0.27.5 runtime tested with XTTS streaming."
 Write-Host "Set MAXLOGIC_XTTS_V2_HELPER_PYTHON to override discovery if needed."
 @{
     helperPython = $helperPython
     provider = $resolvedProvider
-    coquiTts = "0.24.3"
+    coquiTts = "0.27.5"
     torch = "2.11.0"
 } | ConvertTo-Json -Depth 4

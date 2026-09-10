@@ -61,6 +61,23 @@ class CloningTests(unittest.TestCase):
         with self.assertRaises(self.clone.VoiceStoreError):
             self.clone.create_voice(self.paths, "Invalid", "en", {"gpt_cond_chunk_len": 7}, lambda *args: self.fail("model called"))
 
+    def test_generation_preset_is_saved_separately_from_conditioning(self):
+        presets = importlib.import_module("clone_test_package._voice_presets")
+        seen = []
+        def model(paths, target, options):
+            seen.append(options)
+            Path(target).write_bytes(b"conditioning")
+        settings = dict(presets.GENERATION_PRESETS[1][1])
+        record = self.clone.create_voice(self.paths, "Preset", "en", {"trim_silence": True}, model, settings)
+        self.assertEqual(record.metadata["synthesisSettings"], settings)
+        self.assertNotIn("temperature", seen[0])
+        self.assertTrue(seen[0]["trim_silence"])
+        for key, preset in presets.GENERATION_PRESETS:
+            self.assertEqual(presets.generation_settings(preset), preset)
+        for invalid in ({"temperature": float("nan")}, {"top_p": 2}, {"top_k": 2.5}):
+            with self.assertRaises(ValueError):
+                presets.generation_settings(invalid)
+
 
 if __name__ == "__main__":
     unittest.main()

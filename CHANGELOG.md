@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.5
+
+- Update the tested helper stack to coqui-tts 0.27.5 and Transformers 4.57.6.
+- Add accessible recording help, format checks and optional edge-silence trimming.
+- Add separate conditioning and speech generation presets, applied to saved profiles.
+- Include voice content and generation settings in speech cache identities.
+
 ## 0.1.4
 
 - Add a dedicated Clone Voice tab with multiple reference recordings, a name and default language.

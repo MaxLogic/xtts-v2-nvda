@@ -20,6 +20,9 @@ except ImportError:
 
 def validate_options(options):
 	result = dict(max_ref_length=30, gpt_cond_len=6, gpt_cond_chunk_len=6, sound_norm_refs=False)
+	# Keep older profiles/settings valid; trimming is an opt-in preprocessing step.
+	if "trim_silence" in options:
+		result["trim_silence"] = False
 	if set(options) - set(result):
 		raise VoiceStoreError("Unknown voice cloning setting")
 	result.update(options)
@@ -30,12 +33,19 @@ def validate_options(options):
 		raise VoiceStoreError("Conditioning chunk length cannot exceed total conditioning length.")
 	if type(result["sound_norm_refs"]) is not bool:
 		raise VoiceStoreError("Normalization must be enabled or disabled.")
+	if "trim_silence" in result and type(result["trim_silence"]) is not bool:
+		raise VoiceStoreError("Silence trimming must be enabled or disabled.")
 	return result
 
 
-def create_voice(reference_paths, name, language, options, clone):
+def create_voice(reference_paths, name, language, options, clone, synthesis_settings=None):
 	"""Publish only after the external helper has successfully saved conditioning."""
 	options = validate_options(options)
+	try:
+		from ._voice_presets import generation_settings
+	except ImportError:
+		from _voice_presets import generation_settings
+	synthesis_settings = generation_settings(synthesis_settings)
 	voice_id = normalize_voice_id(name)
 	if os.path.exists(get_user_voice_profile_dir(voice_id)):
 		raise DuplicateVoiceError("A voice with this name already exists. Choose a different name.")
@@ -59,6 +69,7 @@ def create_voice(reference_paths, name, language, options, clone):
 			raise VoiceStoreError("Cloning did not produce voice conditioning data.")
 		metadata = dict(voiceId=voice_id, displayName=name.strip(), language=language,
 			conditioningFile="conditioning.pth", cloneSettings=options,
+			synthesisSettings=synthesis_settings,
 			referenceFiles=[os.path.basename(path) for path in copies])
 		with open(os.path.join(profile, "profile.json"), "w", encoding="utf-8") as handle:
 			json.dump(metadata, handle, indent=2)

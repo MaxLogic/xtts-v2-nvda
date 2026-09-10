@@ -34,7 +34,7 @@ The add-on is helper-first. The recommended setup is:
 3. The setup step installs the pinned helper runtime tested with this add-on.
 4. Select `MaxLogic XTTS v2` as the synthesizer in NVDA.
 
-The bootstrap script installs Python packages pinned for the tested XTTS streaming stack: `coqui-tts==0.24.3`, `transformers==4.46.1`, `numpy<2`, and PyTorch/Torchaudio 2.11.0 for the selected provider. Auto setup prefers Python 3.11 when available because that is the tested environment.
+The bootstrap script installs Python packages pinned for the tested XTTS streaming stack: `coqui-tts==0.27.5`, `transformers==4.57.6`, `torchcodec==0.16.0`, `numpy<2`, and PyTorch/Torchaudio 2.11.0 for the selected provider. Auto setup prefers Python 3.11 when available because that is the tested environment.
 
 By default the helper uses the Coqui model name `tts_models/multilingual/multi-dataset/xtts_v2`.
 
@@ -159,3 +159,25 @@ Reference volume normalization is optional and off by default. **Show advanced s
 - **Conditioning chunk seconds** (default 6): chunk size within that conditioning audio; it must not exceed the total.
 
 Longer values do not guarantee better results. These settings affect voice conditioning; they are not speaking-speed or synthesis-temperature controls. Model startup can take tens of seconds. Creation runs in a worker while NVDA remains responsive, and the status dialog closes when it finishes. The created profile appears in Installed, where its folder can be opened.
+
+
+### Choosing recordings and presets
+
+The Clone Voice tab has **Help: choosing recordings** (Alt+H) and **Check recordings** (Alt+K). The checker reports duration, channels and sample rate without loading XTTS. It suggests PCM WAV or FLAC conversion only if decoding fails; stereo or 48 kHz alone does not require conversion. XTTS handles mono mixing and resampling internally. Its output is 24 kHz.
+
+Use clear recordings of one speaker with consistent sound and little edge silence. Roughly 6–15 seconds per clip is a starting point, not a quality guarantee. Several clean references may help, but more files are not automatically better than one good recording. Speaker embeddings are averaged; GPT conditioning uses the selected duration from joined recordings in list order. Optional edge trimming preserves original files, retains about 100 ms of margin and keeps internal pauses. It is off by default.
+
+Reference conditioning presets use maximum-reference / total-conditioning / chunk seconds: Default **30 / 6 / 6**, Extended **30 / 12 / 6**, Longer **30 / 30 / 6**. Advanced controls remain editable.
+
+Speech generation presets are separate and saved with each newly created voice:
+
+| Preset | Temperature | Top p | Top k | Repetition penalty | Speed |
+| --- | --- | --- | --- | --- | --- |
+| XTTS inference defaults | 0.75 | 0.85 | 50 | 10 | 1.0 |
+| Suggested range: midpoint | 0.75 | 0.85 | 50 | 2 | 1.0 |
+| Suggested range: lower | 0.65 | 0.80 | 50 | 2 | 1.0 |
+| Suggested range: upper | 0.85 | 0.90 | 50 | 2 | 1.0 |
+
+These are starting points for listening comparisons, not ranked quality presets. Speed multiplies NVDA's rate. Settings affect both streamed and buffered synthesis. Changing controls does not edit an existing voice. Saved conditioning avoids recloning, but generating new text still needs the model; a matching preview WAV does not. Cache identities include profile files and speech settings.
+
+References checked: [Coqui package](https://pypi.org/project/coqui-tts/), [XTTS 0.27.5 source](https://github.com/idiap/coqui-ai-TTS/blob/v0.27.5/TTS/tts/models/xtts.py), [voice caching](https://coqui-tts.readthedocs.io/en/latest/cloning.html).

@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
 <link rel="stylesheet" type="text/css" href="../style.css" media="screen">
-<title>MaxLogic XTTS v2 0.1.4</title>
+<title>MaxLogic XTTS v2 0.1.5</title>
 </head>
 <body>
 <h1>MaxLogic XTTS v2 for NVDA</h1>
@@ -38,7 +38,7 @@
 <li>The setup step installs the pinned helper runtime tested with this add-on.</li>
 <li>Select <code>MaxLogic XTTS v2</code> as the synthesizer in NVDA.</li>
 </ol>
-<p>The bootstrap script installs Python packages pinned for the tested XTTS streaming stack: <code>coqui-tts==0.24.3</code>, <code>transformers==4.46.1</code>, <code>numpy&lt;2</code>, and PyTorch/Torchaudio 2.11.0 for the selected provider. Auto setup prefers Python 3.11 when available because that is the tested environment.</p>
+<p>The bootstrap script installs Python packages pinned for the tested XTTS streaming stack: <code>coqui-tts==0.27.5</code>, <code>transformers==4.57.6</code>, <code>torchcodec==0.16.0</code>, <code>numpy&lt;2</code>, and PyTorch/Torchaudio 2.11.0 for the selected provider. Auto setup prefers Python 3.11 when available because that is the tested environment.</p>
 <p>By default the helper uses the Coqui model name <code>tts_models/multilingual/multi-dataset/xtts_v2</code>.</p>
 <p>Normal NVDA speech cancellation stops current audio without restarting the XTTS helper. This keeps the warmed CUDA runtime available for the next utterance; the helper is closed when the synth is terminated or NVDA switches away from it.</p>
 <p>XTTS is still a large neural voice-cloning model, so uncached text is much slower than classic screen-reader synths. With the pinned helper runtime, the driver streams generated audio chunks as they become available, then relies on the persistent speech cache for repeated UI text. If a different helper runtime does not report streaming support, the add-on falls back to full-buffer synthesis.</p>
@@ -142,5 +142,18 @@
 <li><strong>Conditioning chunk seconds</strong> (default 6): chunk size within that conditioning audio; it must not exceed the total.</li>
 </ul>
 <p>Longer values do not guarantee better results. These settings affect voice conditioning; they are not speaking-speed or synthesis-temperature controls. Model startup can take tens of seconds. Creation runs in a worker while NVDA remains responsive, and the status dialog closes when it finishes. The created profile appears in Installed, where its folder can be opened.</p>
+<h3>Choosing recordings and presets</h3>
+<p>The Clone Voice tab has <strong>Help: choosing recordings</strong> (Alt+H) and <strong>Check recordings</strong> (Alt+K). The checker reports duration, channels and sample rate without loading XTTS. It suggests PCM WAV or FLAC conversion only if decoding fails; stereo or 48 kHz alone does not require conversion. XTTS handles mono mixing and resampling internally. Its output is 24 kHz.</p>
+<p>Use clear recordings of one speaker with consistent sound and little edge silence. Roughly 6–15 seconds per clip is a starting point, not a quality guarantee. Several clean references may help, but more files are not automatically better than one good recording. Speaker embeddings are averaged; GPT conditioning uses the selected duration from joined recordings in list order. Optional edge trimming preserves original files, retains about 100 ms of margin and keeps internal pauses. It is off by default.</p>
+<p>Reference conditioning presets use maximum-reference / total-conditioning / chunk seconds: Default <strong>30 / 6 / 6</strong>, Extended <strong>30 / 12 / 6</strong>, Longer <strong>30 / 30 / 6</strong>. Advanced controls remain editable.</p>
+<p>Speech generation presets are separate and saved with each newly created voice:</p>
+<p>| Preset | Temperature | Top p | Top k | Repetition penalty | Speed |
+| --- | --- | --- | --- | --- | --- |
+| XTTS inference defaults | 0.75 | 0.85 | 50 | 10 | 1.0 |
+| Suggested range: midpoint | 0.75 | 0.85 | 50 | 2 | 1.0 |
+| Suggested range: lower | 0.65 | 0.80 | 50 | 2 | 1.0 |
+| Suggested range: upper | 0.85 | 0.90 | 50 | 2 | 1.0 |</p>
+<p>These are starting points for listening comparisons, not ranked quality presets. Speed multiplies NVDA's rate. Settings affect both streamed and buffered synthesis. Changing controls does not edit an existing voice. Saved conditioning avoids recloning, but generating new text still needs the model; a matching preview WAV does not. Cache identities include profile files and speech settings.</p>
+<p>References checked: <a href="https://pypi.org/project/coqui-tts/">Coqui package</a>, <a href="https://github.com/idiap/coqui-ai-TTS/blob/v0.27.5/TTS/tts/models/xtts.py">XTTS 0.27.5 source</a>, <a href="https://coqui-tts.readthedocs.io/en/latest/cloning.html">voice caching</a>.</p>
 </body>
 </html>

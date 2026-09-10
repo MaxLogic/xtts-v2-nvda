@@ -118,11 +118,11 @@ def _load_sample_texts():
 	return _sample_text_cache
 
 
-def clone_voice(reference_paths, name, language, options):
+def clone_voice(reference_paths, name, language, options, synthesis_settings=None):
 	from synthDrivers.maxlogic_xtts_v2._cloning import create_voice
 	def clone(paths, target, settings):
 		_get_preview_helper(skip_prewarm=True).clone_voice(paths, target, settings)
-	return create_voice(reference_paths, name, language, options, clone)
+	return create_voice(reference_paths, name, language, options, clone, synthesis_settings)
 
 
 def get_sample_text(language):

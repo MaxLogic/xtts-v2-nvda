@@ -237,7 +237,8 @@ def main():
 					speed = request.get("speed", 1.0)
 					volume = request.get("volume", 1.0)
 					generation = request.get("generation")
-					audio_bytes, cache_state = _get_cached_audio(speech_cache, hot_text_cache, voice, speed, volume, language, text)
+					cache_voice = engine.get_voice_cache_key(voice or engine.current_voice)
+					audio_bytes, cache_state = _get_cached_audio(speech_cache, hot_text_cache, cache_voice, speed, volume, language, text)
 					if audio_bytes is None:
 						audio = engine.synthesize_to_int16(
 							text,
@@ -247,7 +248,7 @@ def main():
 							language=language,
 						)
 						audio_bytes = audio.tobytes()
-						_store_cached_audio(speech_cache, hot_text_cache, voice, speed, volume, language, text, audio_bytes)
+						_store_cached_audio(speech_cache, hot_text_cache, cache_voice, speed, volume, language, text, audio_bytes)
 					elapsed_ms = round((time.perf_counter() - start_time) * 1000, 1)
 					LOGGER.info(
 						"Helper synthesize complete. chars=%s voice=%s lang=%s speed=%s volume=%s cache=%s elapsedMs=%s generation=%s",
@@ -272,7 +273,8 @@ def main():
 					speed = request.get("speed", 1.0)
 					volume = request.get("volume", 1.0)
 					generation = request.get("generation")
-					audio_bytes, cache_state = _get_cached_audio(speech_cache, hot_text_cache, voice, speed, volume, language, text)
+					cache_voice = engine.get_voice_cache_key(voice or engine.current_voice)
+					audio_bytes, cache_state = _get_cached_audio(speech_cache, hot_text_cache, cache_voice, speed, volume, language, text)
 					chunk_count = 0
 					first_chunk_ms = None
 					if audio_bytes is not None:
@@ -297,7 +299,7 @@ def main():
 								first_chunk_ms = round((time.perf_counter() - start_time) * 1000, 1)
 							_send_audio_chunk(request_id, audio_chunk, chunk_count)
 						audio_bytes = bytes(full_audio)
-						_store_cached_audio(speech_cache, hot_text_cache, voice, speed, volume, language, text, audio_bytes)
+						_store_cached_audio(speech_cache, hot_text_cache, cache_voice, speed, volume, language, text, audio_bytes)
 					elapsed_ms = round((time.perf_counter() - start_time) * 1000, 1)
 					LOGGER.info(
 						"Helper synthesize stream complete. chars=%s voice=%s lang=%s speed=%s volume=%s cache=%s chunks=%s firstChunkMs=%s elapsedMs=%s generation=%s",

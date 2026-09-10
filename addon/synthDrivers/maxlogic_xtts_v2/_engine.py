@@ -1,4 +1,5 @@
 import hashlib
+import json
 import importlib.metadata
 import os
 import shutil
@@ -241,6 +242,38 @@ class XTTSV2Engine(object):
 	def close(self):
 		self.tts = None
 
+	def get_voice_cache_key(self, voice_name):
+		record = self.voice_records[voice_name]
+		identity = self._build_voice_cache_key(record.reference_paths, conditioning_path=record.conditioning_path)
+		settings = json.dumps((record.metadata or {}).get("synthesisSettings") or {}, sort_keys=True)
+		return identity + "_" + hashlib.sha256(settings.encode("utf-8")).hexdigest()[:12]
+
+	def _prepare_cloning_references(self, reference_paths, trim):
+		# Decode and check before conditioning; keep the original files untouched.
+		cleanup_root = tempfile.mkdtemp(prefix="maxlogic-clone-audio-")
+		paths = []
+		try:
+			for index, path in enumerate(reference_paths):
+				audio, rate = sf.read(path, dtype="float32", always_2d=True)
+				audio = audio.mean(axis=1)
+				if not audio.size or not np.isfinite(audio).all() or np.max(np.abs(audio)) < 0.00001:
+					raise VoiceStoreError("Recording is silent, empty or damaged: %s" % path)
+				if trim:
+					# -40 dB relative to this recording's peak, with 100 ms retained at both edges.
+					active = np.flatnonzero(np.abs(audio) > np.max(np.abs(audio)) * 0.01)
+					padding = int(rate * 0.1)
+					audio = audio[max(0, active[0] - padding):min(len(audio), active[-1] + padding + 1)]
+				if len(audio) / rate < 0.33:
+					raise VoiceStoreError("Recording is too short. Use several seconds of clear speech: %s" % path)
+				target = os.path.join(cleanup_root, "%02d.wav" % index)
+				# Float WAV avoids an extra lossy conversion. XTTS handles resampling itself.
+				sf.write(target, audio, rate, subtype="FLOAT")
+				paths.append(target)
+			return paths, cleanup_root
+		except Exception:
+			shutil.rmtree(cleanup_root, ignore_errors=True)
+			raise
+
 	def clone_voice(self, reference_paths, conditioning_path, options):
 		try:
 			from ._cloning import validate_options
@@ -248,7 +281,8 @@ class XTTSV2Engine(object):
 			from _cloning import validate_options
 		import torch
 		options = validate_options(options)
-		paths, cleanup_root = self._prepare_reference_paths(reference_paths)
+		trim = options.pop("trim_silence", False)
+		paths, cleanup_root = self._prepare_cloning_references(reference_paths, trim)
 		try:
 			gpt, speaker = self.tts.synthesizer.tts_model.get_conditioning_latents(audio_path=paths, **options)
 			if not torch.isfinite(gpt).all() or not torch.isfinite(speaker).all():
@@ -310,7 +344,8 @@ class XTTSV2Engine(object):
 			text,
 			record.reference_paths,
 			conditioning_path=record.conditioning_path,
-			cache_key=voice_name,
+			cache_key=self.get_voice_cache_key(voice_name),
+			synthesis_settings=(record.metadata or {}).get("synthesisSettings"),
 			speed=speed,
 			volume=volume,
 			language=language,
@@ -327,7 +362,8 @@ class XTTSV2Engine(object):
 			text,
 			record.reference_paths,
 			conditioning_path=record.conditioning_path,
-			cache_key=voice_name,
+			cache_key=self.get_voice_cache_key(voice_name),
+			synthesis_settings=(record.metadata or {}).get("synthesisSettings"),
 			speed=speed,
 			volume=volume,
 			language=language,
@@ -370,7 +406,7 @@ class XTTSV2Engine(object):
 			except Exception:
 				parts.append(0)
 		major, minor = (parts + [0, 0])[:2]
-		return major == 0 and minor == 24
+		return major == 0 and minor in (24, 27)
 
 	def _normalize_language(self, language):
 		key = (language or "en").strip().lower()
@@ -381,9 +417,14 @@ class XTTSV2Engine(object):
 			normalized = "en"
 		return normalized
 
-	def _synthesize_from_references(self, text, reference_paths, conditioning_path=None, cache_key=None, speed=1.0, volume=1.0, language="en-us"):
+	def _synthesize_from_references(self, text, reference_paths, conditioning_path=None, cache_key=None, speed=1.0, volume=1.0, language="en-us", synthesis_settings=None):
 		normalized_language = self._normalize_language(language)
-		speed = max(0.6, min(1.8, float(speed)))
+		try:
+			from ._voice_presets import generation_settings
+		except ImportError:
+			from _voice_presets import generation_settings
+		settings = generation_settings(synthesis_settings)
+		speed = max(0.6, min(1.8, float(speed) * settings.pop("speed", 1.0)))
 		voice = self._get_or_create_voice_conditioning(
 			reference_paths,
 			cache_key=cache_key,
@@ -392,6 +433,7 @@ class XTTSV2Engine(object):
 		waveform = self._tts_with_cached_voice(
 			text=text,
 			voice=voice,
+			settings=settings,
 			language=normalized_language,
 			speed=speed,
 		)
@@ -399,20 +441,26 @@ class XTTSV2Engine(object):
 		waveform = np.clip(waveform * max(0.0, min(1.0, float(volume))), -1.0, 1.0)
 		return (waveform * 32767.0).astype(np.int16, copy=False)
 
-	def _stream_synthesize_from_references(self, text, reference_paths, conditioning_path=None, cache_key=None, speed=1.0, volume=1.0, language="en-us"):
+	def _stream_synthesize_from_references(self, text, reference_paths, conditioning_path=None, cache_key=None, speed=1.0, volume=1.0, language="en-us", synthesis_settings=None):
 		if not self.supports_streaming():
 			yield self._synthesize_from_references(
 				text,
 				reference_paths,
 				conditioning_path=conditioning_path,
 				cache_key=cache_key,
+				synthesis_settings=synthesis_settings,
 				speed=speed,
 				volume=volume,
 				language=language,
 			)
 			return
 		normalized_language = self._normalize_language(language)
-		speed = max(0.6, min(1.8, float(speed)))
+		try:
+			from ._voice_presets import generation_settings
+		except ImportError:
+			from _voice_presets import generation_settings
+		settings = generation_settings(synthesis_settings)
+		speed = max(0.6, min(1.8, float(speed) * settings.pop("speed", 1.0)))
 		volume = max(0.0, min(1.0, float(volume)))
 		voice = self._get_or_create_voice_conditioning(
 			reference_paths,
@@ -428,6 +476,7 @@ class XTTSV2Engine(object):
 			speed=speed,
 			enable_text_splitting=False,
 			stream_chunk_size=20,
+			**settings,
 		):
 			waveform = self._chunk_to_numpy(chunk)
 			waveform = np.clip(waveform * volume, -1.0, 1.0)
@@ -552,7 +601,7 @@ class XTTSV2Engine(object):
 		except Exception:
 			return None
 
-	def _tts_with_cached_voice(self, text, voice, language, speed):
+	def _tts_with_cached_voice(self, text, voice, language, speed, settings=None):
 		model = self.tts.synthesizer.tts_model
 		return model.inference(
 			text,
@@ -561,6 +610,7 @@ class XTTSV2Engine(object):
 			voice["speaker_embedding"],
 			speed=speed,
 			enable_text_splitting=False,
+			**(settings or {}),
 		)["wav"]
 
 	def _chunk_to_numpy(self, chunk):
