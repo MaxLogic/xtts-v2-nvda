@@ -125,6 +125,23 @@ def clone_voice(reference_paths, name, language, options, synthesis_settings=Non
 	return create_voice(reference_paths, name, language, options, clone, synthesis_settings)
 
 
+def clone_voice_draft(reference_paths, language, options, synthesis_settings=None):
+	from synthDrivers.maxlogic_xtts_v2._cloning import create_draft
+	def clone(paths, target, settings):
+		_get_preview_helper(skip_prewarm=True).clone_voice(paths, target, settings)
+	return create_draft(reference_paths, language, options, clone, synthesis_settings)
+
+
+def save_voice_draft(record, name, overwrite=False):
+	from synthDrivers.maxlogic_xtts_v2._cloning import save_draft
+	return save_draft(record, name, overwrite=overwrite)
+
+
+def discard_voice_draft(record):
+	from synthDrivers.maxlogic_xtts_v2._cloning import discard_draft
+	return discard_draft(record)
+
+
 def get_sample_text(language):
 	payload = _load_sample_texts()
 	key = (language or "").strip().lower()
@@ -966,7 +983,8 @@ def install_huggingface_voice(entry, overwrite=False, refresh=True):
 def _build_installed_preview_cache_payload(record, language, sample_text):
 	return {
 		"cacheVersion": _PREVIEW_WAV_CACHE_VERSION,
-		"kind": "installed",
+		"kind": "draft" if record.source == "draft" else "installed",
+		"synthesisSettings": dict((record.metadata or {}).get("synthesisSettings") or {}),
 		"voiceId": record.voice_id,
 		"language": language,
 		"text": sample_text,
@@ -991,7 +1009,7 @@ def _build_catalog_preview_cache_payload(entry, language, sample_text):
 	}
 
 
-def play_installed_voice_sample(record, on_complete=None, preview_language=None, on_playback_started=None, on_progress=None):
+def play_installed_voice_sample(record, on_complete=None, preview_language=None, on_playback_started=None, on_progress=None, sample_text=None):
 	generation = _begin_preview()
 	start_time = time.perf_counter()
 
@@ -1011,8 +1029,10 @@ def play_installed_voice_sample(record, on_complete=None, preview_language=None,
 	def _worker():
 		try:
 			language = (preview_language or ((record.metadata or {}).get("language")) or "en")
-			sample_text = get_sample_text(language)
-			cache_payload = _build_installed_preview_cache_payload(record, language, sample_text)
+			text = get_sample_text(language) if sample_text is None else sample_text.strip()
+			if not text:
+				raise ValueError("Enter sample text to preview the voice.")
+			cache_payload = _build_installed_preview_cache_payload(record, language, text)
 			cached_preview = _read_preview_wav_cache(cache_payload)
 			if generation != _preview_generation:
 				_finish("superseded")
@@ -1024,37 +1044,23 @@ def play_installed_voice_sample(record, on_complete=None, preview_language=None,
 				sample_rate = cached_preview["sampleRate"]
 			else:
 				progress("loading_model")
-				sample_rate = 24000
-				try:
-					helper = _get_preview_helper(skip_prewarm=True)
-				except Exception as helper_error:
-					log.warning("MaxLogic XTTS v2 installed preview helper unavailable, using in-process preview: %s", helper_error)
-					from synthDrivers.maxlogic_xtts_v2._engine import XTTSV2Engine
-
-					engine = XTTSV2Engine(_package_root())
-					audio = engine.synthesize_to_int16(
-						sample_text,
-						voice=record.voice_id,
-						language=language,
+				helper = _get_preview_helper(skip_prewarm=True)
+				progress("generating")
+				if record.source == "draft":
+					if not record.conditioning_path:
+						raise VoiceStoreError("The draft has no saved conditioning.")
+					chunks = helper.stream_synthesize_preview_to_int16(
+						text, conditioning_path=record.conditioning_path,
+						language=language, cache_key=record.voice_id,
+						synthesis_settings=(record.metadata or {}).get("synthesisSettings"),
 					)
-					engine.close()
-					audio_bytes = audio.tobytes()
 				else:
 					if record.voice_id not in set(getattr(helper, "_voices", []) or []):
-						log.info(
-							"MaxLogic XTTS v2 preview helper voice store stale; reloading before preview. voice=%s",
-							record.voice_id,
-						)
 						helper.reload_voices(preferred_voice=record.voice_id)
-					progress("generating")
-					chunks = helper.stream_synthesize_to_int16(sample_text, voice=record.voice_id, language=language)
-					status = _play_preview_stream(chunks, helper.sample_rate, generation, cache_payload, started)
-					_finish(status)
-					return
-				try:
-					_write_preview_wav_cache(cache_payload, sample_rate, audio_bytes)
-				except Exception:
-					log.warning("MaxLogic XTTS v2 preview WAV cache write failed for installed voice %s", record.voice_id, exc_info=True)
+					chunks = helper.stream_synthesize_to_int16(text, voice=record.voice_id, language=language)
+				status = _play_preview_stream(chunks, helper.sample_rate, generation, cache_payload, started)
+				_finish(status)
+				return
 			status = _play_preview_audio(
 				audio_bytes,
 				sample_rate,
@@ -1268,6 +1274,9 @@ __all__ = [
 	"DuplicateVoiceError",
 	"VoiceStoreError",
 	"clear_speech_cache",
+	"clone_voice_draft",
+	"save_voice_draft",
+	"discard_voice_draft",
 	"compact_speech_cache",
 	"create_audio_working_copy",
 	"delete_audio_source_segment",
