@@ -580,23 +580,23 @@ class CatalogVoicesPanel(wx.Panel):
 		sizer.Add(wx.StaticText(self, label=title), 0, wx.ALL, 5)
 
 		filter_row = wx.BoxSizer(wx.HORIZONTAL)
-		filter_row.Add(wx.StaticText(self, label=_("Filter")), 0, wx.ALIGN_CENTER_VERTICAL | wx.ALL, 5)
+		filter_row.Add(wx.StaticText(self, label=_("&Filter")), 0, wx.ALIGN_CENTER_VERTICAL | wx.ALL, 5)
 		self.search_text = wx.TextCtrl(self)
 		self.search_text.SetName(_("Search voices"))
 		filter_row.Add(self.search_text, 1, wx.EXPAND | wx.ALL, 5)
-		filter_row.Add(wx.StaticText(self, label=_("Gender")), 0, wx.ALIGN_CENTER_VERTICAL | wx.ALL, 5)
+		filter_row.Add(wx.StaticText(self, label=_("&Gender")), 0, wx.ALIGN_CENTER_VERTICAL | wx.ALL, 5)
 		self.gender_choice = wx.Choice(self, choices=[label for __, label in GENDER_FILTERS])
 		self.gender_choice.SetName(_("Gender"))
 		self.gender_choice.SetSelection(0)
 		filter_row.Add(self.gender_choice, 0, wx.ALL, 5)
-		filter_row.Add(wx.StaticText(self, label=_("Language")), 0, wx.ALIGN_CENTER_VERTICAL | wx.ALL, 5)
+		filter_row.Add(wx.StaticText(self, label=_("&Language")), 0, wx.ALIGN_CENTER_VERTICAL | wx.ALL, 5)
 		self.language_choice = wx.Choice(self, choices=[self._language_options[0][1]])
 		self.language_choice.SetName(_("Language"))
 		self.language_choice.SetSelection(0)
 		filter_row.Add(self.language_choice, 0, wx.ALL, 5)
 		sizer.Add(filter_row, 0, wx.EXPAND | wx.LEFT | wx.RIGHT, 0)
 		if self._show_hide_local_toggle:
-			self.hide_installed_checkbox = wx.CheckBox(self, label=_("Hide voices already available locally"))
+			self.hide_installed_checkbox = wx.CheckBox(self, label=_("&Hide voices already available locally"))
 			sizer.Add(self.hide_installed_checkbox, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM, 5)
 		else:
 			self.hide_installed_checkbox = None
@@ -624,11 +624,11 @@ class CatalogVoicesPanel(wx.Panel):
 		sizer.Add(preview_row, 0, wx.LEFT | wx.RIGHT, 0)
 
 		button_row = wx.WrapSizer(wx.HORIZONTAL)
-		self.select_button = wx.Button(self, label=_("Select visible"))
-		self.clear_button = wx.Button(self, label=_("Clear visible"))
+		self.select_button = wx.Button(self, label=_("Select &visible"))
+		self.clear_button = wx.Button(self, label=_("Cl&ear visible"))
 		self.preview_button = wx.Button(self, label=_("&Play sample"))
-		self.download_button = wx.Button(self, label=_("Download selected voices"))
-		self.refresh_button = wx.Button(self, label=_("Refresh catalog"))
+		self.download_button = wx.Button(self, label=_("&Download selected voices"))
+		self.refresh_button = wx.Button(self, label=_("&Refresh catalog"))
 		button_row.Add(self.select_button, 0, wx.ALL, 5)
 		button_row.Add(self.clear_button, 0, wx.ALL, 5)
 		button_row.Add(self.preview_button, 0, wx.ALL, 5)
@@ -653,7 +653,7 @@ class CatalogVoicesPanel(wx.Panel):
 
 	def _update_preview_button_state(self):
 		focused_entry = self._focused_entry()
-		self.preview_button.SetLabel(_("&Stop") if self._preview_playing else _("&Play sample"))
+		self.preview_button.SetLabel(_("Sto&p sample") if self._preview_playing else _("&Play sample"))
 		can_start = focused_entry is not None and focused_entry.get("availableOnline", True) and not self._preview_in_progress
 		self.preview_button.Enable(self._preview_playing or can_start)
 
@@ -1072,26 +1072,26 @@ class HuggingFaceSearchPanel(wx.Panel):
 		)
 
 		search_row = wx.BoxSizer(wx.HORIZONTAL)
-		search_row.Add(wx.StaticText(self, label=_("Query")), 0, wx.ALIGN_CENTER_VERTICAL | wx.ALL, 5)
+		search_row.Add(wx.StaticText(self, label=_("&Query")), 0, wx.ALIGN_CENTER_VERTICAL | wx.ALL, 5)
 		self.search_text = wx.TextCtrl(self, value="xtts", style=wx.TE_PROCESS_ENTER)
 		self.search_text.SetName(_("Search voices"))
-		self.search_button = wx.Button(self, label=_("Search Hugging Face"))
+		self.search_button = wx.Button(self, label=_("&Search Hugging Face"))
 		search_row.Add(self.search_text, 1, wx.EXPAND | wx.ALL, 5)
 		search_row.Add(self.search_button, 0, wx.ALL, 5)
 		sizer.Add(search_row, 0, wx.EXPAND)
 
 		filter_row = wx.BoxSizer(wx.HORIZONTAL)
-		filter_row.Add(wx.StaticText(self, label=_("Gender")), 0, wx.ALIGN_CENTER_VERTICAL | wx.ALL, 5)
+		filter_row.Add(wx.StaticText(self, label=_("&Gender")), 0, wx.ALIGN_CENTER_VERTICAL | wx.ALL, 5)
 		self.gender_choice = wx.Choice(self, choices=[label for __, label in GENDER_FILTERS])
 		self.gender_choice.SetName(_("Gender"))
 		self.gender_choice.SetSelection(0)
 		filter_row.Add(self.gender_choice, 0, wx.ALL, 5)
-		filter_row.Add(wx.StaticText(self, label=_("Language")), 0, wx.ALIGN_CENTER_VERTICAL | wx.ALL, 5)
+		filter_row.Add(wx.StaticText(self, label=_("&Language")), 0, wx.ALIGN_CENTER_VERTICAL | wx.ALL, 5)
 		self.language_choice = wx.Choice(self, choices=[self._language_options[0][1]])
 		self.language_choice.SetName(_("Language"))
 		self.language_choice.SetSelection(0)
 		filter_row.Add(self.language_choice, 0, wx.ALL, 5)
-		self.hide_installed_checkbox = wx.CheckBox(self, label=_("Hide voices already available locally"))
+		self.hide_installed_checkbox = wx.CheckBox(self, label=_("&Hide voices already available locally"))
 		filter_row.Add(self.hide_installed_checkbox, 0, wx.ALL | wx.ALIGN_CENTER_VERTICAL, 5)
 		sizer.Add(filter_row, 0, wx.EXPAND)
 
@@ -1122,10 +1122,10 @@ class HuggingFaceSearchPanel(wx.Panel):
 		sizer.Add(preview_row, 0, wx.LEFT | wx.RIGHT, 0)
 
 		button_row = wx.WrapSizer(wx.HORIZONTAL)
-		self.select_button = wx.Button(self, label=_("Select visible"))
-		self.clear_button = wx.Button(self, label=_("Clear visible"))
+		self.select_button = wx.Button(self, label=_("Select &visible"))
+		self.clear_button = wx.Button(self, label=_("Cl&ear visible"))
 		self.preview_button = wx.Button(self, label=_("&Play sample"))
-		self.install_button = wx.Button(self, label=_("Install selected voices"))
+		self.install_button = wx.Button(self, label=_("&Install selected voices"))
 		button_row.Add(self.select_button, 0, wx.ALL, 5)
 		button_row.Add(self.clear_button, 0, wx.ALL, 5)
 		button_row.Add(self.preview_button, 0, wx.ALL, 5)
@@ -1148,7 +1148,7 @@ class HuggingFaceSearchPanel(wx.Panel):
 
 	def _update_preview_button_state(self):
 		focused_entry = self._focused_entry()
-		self.preview_button.SetLabel(_("&Stop") if self._preview_playing else _("&Play sample"))
+		self.preview_button.SetLabel(_("Sto&p sample") if self._preview_playing else _("&Play sample"))
 		can_start = focused_entry is not None and not self._preview_in_progress
 		self.preview_button.Enable(self._preview_playing or can_start)
 
@@ -1550,7 +1550,7 @@ class BrowseVoicesPanel(wx.Panel):
 		self._panels = {}
 		main_sizer = wx.BoxSizer(wx.VERTICAL)
 		source_row = wx.BoxSizer(wx.HORIZONTAL)
-		source_row.Add(wx.StaticText(self, label=_("Source")), 0, wx.ALIGN_CENTER_VERTICAL | wx.ALL, 5)
+		source_row.Add(wx.StaticText(self, label=_("S&ource")), 0, wx.ALIGN_CENTER_VERTICAL | wx.ALL, 5)
 		self.source_choice = wx.Choice(self, choices=[label for __, label in self._source_options])
 		self.source_choice.SetName(_("Voice source"))
 		self.source_choice.SetSelection(0)
@@ -2792,7 +2792,7 @@ class SpeechCachePanel(ScrolledPanel):
 		self.save_button = wx.Button(self, label=_("&Save cache settings"))
 		self.refresh_button = wx.Button(self, label=_("&Refresh statistics"))
 		self.compact_button = wx.Button(self, label=_("Com&pact cache"))
-		self.clear_button = wx.Button(self, label=_("&Clear cache"))
+		self.clear_button = wx.Button(self, label=_("C&lear cache"))
 		button_row.Add(self.save_button, 0, wx.ALL, 5)
 		button_row.Add(self.refresh_button, 0, wx.ALL, 5)
 		button_row.Add(self.compact_button, 0, wx.ALL, 5)

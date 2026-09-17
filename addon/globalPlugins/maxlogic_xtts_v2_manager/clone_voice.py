@@ -101,7 +101,7 @@ class CloneVoicePanel(wx.Panel):
 		sample_header.Add(self.reset_text_button)
 		sizer.Add(sample_header, 0, wx.ALL, 5)
 		sizer.Add(self.sample_text, 0, wx.EXPAND | wx.LEFT | wx.RIGHT, 5)
-		self.create_button = wx.Button(self, label=_("&Clone for testing"))
+		self.create_button = wx.Button(self, label=_("Clo&ne for testing"))
 		self.preview_button = wx.Button(self, label=_("&Play sample"))
 		self.preview_button.Disable()
 		self.save_button = wx.Button(self, label=_("&Save voice..."))
