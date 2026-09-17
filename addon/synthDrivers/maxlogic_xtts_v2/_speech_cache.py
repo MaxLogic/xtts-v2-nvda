@@ -23,11 +23,34 @@ class SpeechCache(object):
 		self._settings_path = get_cache_settings_path()
 		self._settings_mtime = None
 		self._policy = resolve_cache_policy(load_cache_settings())
-		self._conn = sqlite3.connect(self._db_path, check_same_thread=False)
-		self._conn.execute("PRAGMA journal_mode=WAL")
-		self._conn.execute("PRAGMA synchronous=NORMAL")
-		self._ensure_schema()
+		self._conn = None
+		try:
+			self._open()
+		except sqlite3.DatabaseError as error:
+			# The cache holds nothing that cannot be synthesized again.
+			self._logger.warning("MaxLogic XTTS v2 speech cache is damaged and will be recreated: %s", error)
+			self._set_aside_damaged_database()
+			self._open()
 		self._writes_since_prune = 0
+
+	def _open(self):
+		self._conn = sqlite3.connect(self._db_path, check_same_thread=False)
+		try:
+			self._conn.execute("PRAGMA journal_mode=WAL")
+			self._conn.execute("PRAGMA synchronous=NORMAL")
+			self._ensure_schema()
+		except Exception:
+			self._conn.close()
+			self._conn = None
+			raise
+
+	def _set_aside_damaged_database(self):
+		os.replace(self._db_path, self._db_path + ".damaged")
+		for suffix in ("-wal", "-shm"):
+			try:
+				os.remove(self._db_path + suffix)
+			except OSError:
+				pass
 
 	def close(self):
 		with self._lock:
