@@ -96,6 +96,16 @@ class PreviewHelperLifecycleTests(unittest.TestCase):
         self._play("No further change.")
         self.assertEqual(self.helper.reloads, ["test"])
 
+    def test_the_helper_is_released_after_the_manager_has_been_closed_for_a_while(self):
+        self.service.release_preview_helper_later(delay_seconds=0.05)
+        self.assertTrue(self.helper.closed.wait(2), "the model stayed in memory after the manager closed")
+        self.assertIsNone(self.service._preview_helper)
+
+    def test_reopening_the_manager_keeps_the_helper(self):
+        self.service.release_preview_helper_later(delay_seconds=0.2)
+        self.service.prepare_preview_runtime_async()
+        self.assertFalse(self.helper.closed.wait(0.5), "the helper was closed under a reopened manager")
+
 
 if __name__ == "__main__":
     unittest.main()

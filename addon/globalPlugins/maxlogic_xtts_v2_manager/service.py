@@ -58,6 +58,9 @@ _preview_player_format = None
 _preview_helper = None
 _preview_helper_thread = None
 _preview_voices_stale = False
+_preview_release_lock = threading.Lock()
+_preview_release_timer = None
+_PREVIEW_HELPER_IDLE_SECONDS = 10 * 60
 _sample_text_cache = None
 _PREVIEW_WAV_CACHE_VERSION = 1
 _PREVIEW_WAV_CACHE_DIR_NAME = "preview-wav"
@@ -335,8 +338,28 @@ def close_preview_player():
 			_preview_player_format = None
 
 
+def _cancel_preview_helper_release():
+	global _preview_release_timer
+	with _preview_release_lock:
+		if _preview_release_timer is not None:
+			_preview_release_timer.cancel()
+			_preview_release_timer = None
+
+
+def release_preview_helper_later(delay_seconds=_PREVIEW_HELPER_IDLE_SECONDS):
+	"""Free the loaded model some time after the manager closes. Reopening the manager keeps it."""
+	global _preview_release_timer
+	_cancel_preview_helper_release()
+	timer = threading.Timer(delay_seconds, close_preview_helper)
+	timer.daemon = True
+	with _preview_release_lock:
+		_preview_release_timer = timer
+	timer.start()
+
+
 def _get_preview_helper(skip_prewarm=True):
 	global _preview_helper
+	_cancel_preview_helper_release()
 	with _preview_helper_lock:
 		if _preview_helper is not None:
 			return _preview_helper
@@ -384,6 +407,7 @@ def prepare_preview_runtime_async(on_complete=None):
 			if on_complete is not None:
 				wx.CallAfter(on_complete, error_message)
 
+	_cancel_preview_helper_release()
 	# Another page can request warmup while helper startup owns this lock.
 	# Never make the NVDA GUI thread wait for the external process.
 	if not _preview_helper_lock.acquire(blocking=False):
@@ -1313,6 +1337,7 @@ __all__ = [
 	"probe_audio_source",
 	"prepare_preview_runtime_async",
 	"refresh_active_synth",
+	"release_preview_helper_later",
 	"render_audio_source_segment",
 	"remove_local_voice",
 	"run_runtime_setup",

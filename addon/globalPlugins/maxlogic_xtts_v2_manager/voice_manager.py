@@ -3213,6 +3213,8 @@ class MaxLogicVoiceManagerDialog(wx.Dialog):
 			ui.message(_("Wait for the audio operation to finish before closing."))
 			return
 		service.stop_preview()
+		# The helper holds the whole XTTS model in memory. Keep it for a quick reopen, not for the session.
+		service.release_preview_helper_later()
 		if self.clone_panel.content:
 			self.clone_panel.content.cleanup()
 		try:
