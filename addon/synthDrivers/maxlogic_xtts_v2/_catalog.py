@@ -88,17 +88,6 @@ def load_cached_catalog(catalog_name):
 	return payload
 
 
-def _write_catalog_cache(catalog_name, payload):
-	cache_path = _catalog_cache_path(catalog_name)
-	temp_dir = get_temp_dir(create=True)
-	with tempfile.NamedTemporaryFile(delete=False, dir=temp_dir, suffix=".json") as tmp_handle:
-		tmp_path = tmp_handle.name
-	with open(tmp_path, "w", encoding="utf-8") as handle:
-		json.dump(payload, handle, indent=2, sort_keys=True)
-	os.replace(tmp_path, cache_path)
-	return cache_path
-
-
 def _resolve_mirror_path(download_url):
 	if not download_url or not download_url.startswith("mirror://"):
 		return None
@@ -147,7 +136,9 @@ def _normalize_remote_url(url):
 
 def resolve_catalog(catalog_name="official", force_refresh=False):
 	del force_refresh
-	cached = load_cached_catalog(catalog_name)
+	# Only an online index can be newer than the bundle. Without one, a cached copy
+	# would hide entries added by an add-on update.
+	cached = load_cached_catalog(catalog_name) if _require_catalog(catalog_name)["onlineIndexUrl"] else None
 	if cached is not None:
 		cached["entries"] = _enrich_entries(cached.get("entries", []))
 		return cached
@@ -263,12 +254,6 @@ def download_catalog_voice(entry, overwrite=False, force_bad_sha=False):
 			install_note=install_note,
 			extra_metadata=extra_metadata,
 		)
-		if catalog_name in CATALOGS:
-			cache_payload = {
-				"schemaVersion": CATALOG_SCHEMA_VERSION,
-				"entries": _enrich_entries(load_bundled_catalog(catalog_name).get("entries", [])),
-			}
-			_write_catalog_cache(catalog_name, cache_payload)
 		return records
 	finally:
 		if os.path.isfile(temp_path):
