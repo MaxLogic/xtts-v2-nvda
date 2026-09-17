@@ -331,9 +331,7 @@ class InstalledVoicesPanel(wx.Panel):
 				wx.OK | wx.ICON_ERROR,
 			)
 			return
-		message = _("XTTS runtime is ready.")
-		ui.message(message)
-		gui.messageBox(message, _("XTTS setup complete"), wx.OK | wx.ICON_INFORMATION)
+		ui.message(_("XTTS runtime is ready."))
 
 	def on_setup_runtime(self, event):
 		if self._setup_busy is not None:
@@ -405,12 +403,7 @@ class InstalledVoicesPanel(wx.Panel):
 			return
 		self.refresh_entries()
 		self._on_change()
-		refresh = result["refresh"]
-		message = _("Installed voice successfully.")
-		if refresh.get("restartRequired"):
-			message += "\n" + _("Restart NVDA to refresh the current synth.")
-		ui.message(_("Voice installed."))
-		gui.messageBox(message, _("Voice installed"), wx.OK | wx.ICON_INFORMATION)
+		self._report_voice_change(_("Voice installed."), result["refresh"])
 
 	def on_remove(self, event):
 		record = self._selected_record()
@@ -439,11 +432,14 @@ class InstalledVoicesPanel(wx.Panel):
 			return
 		self.refresh_entries()
 		self._on_change()
-		message = _("Removed voice successfully.")
-		if result["refresh"].get("restartRequired"):
-			message += "\n" + _("Restart NVDA to refresh the current synth.")
-		ui.message(_("Voice removed."))
-		gui.messageBox(message, _("Voice removed"), wx.OK | wx.ICON_INFORMATION)
+		self._report_voice_change(_("Voice removed."), result["refresh"])
+
+	def _report_voice_change(self, message, refresh):
+		# Success needs no dialog to dismiss. A required restart does, because the voice list is stale until then.
+		if refresh.get("restartRequired"):
+			gui.messageBox(message + "\n" + _("Restart NVDA to refresh the current synth."), message, wx.OK | wx.ICON_INFORMATION)
+			return
+		ui.message(message)
 
 	def on_open_voice_folder(self, event):
 		record = self._selected_record()
@@ -2662,13 +2658,12 @@ class ExtractSamplePanel(ScrolledPanel):
 				wx.OK | wx.ICON_ERROR,
 			)
 			return
-		self.status_label.SetLabel(_("XTTS profile saved successfully."))
 		self._on_change()
-		message = _("Saved XTTS profile successfully.")
+		message = _("Profile saved. It is now listed on the Installed page.")
 		if result["refresh"].get("restartRequired"):
-			message += "\n" + _("Restart NVDA to refresh the current synth.")
-		ui.message(_("Profile saved."))
-		gui.messageBox(message, _("Profile saved"), wx.OK | wx.ICON_INFORMATION)
+			message = _("Profile saved. Restart NVDA to refresh the current synth.")
+		self.status_label.SetLabel(message)
+		ui.message(message)
 
 	def _begin_save(self, overwrite=False):
 		try:
@@ -2984,13 +2979,9 @@ class SpeechCachePanel(ScrolledPanel):
 			)
 			return
 		self._load_into_controls(payload["settings"], payload["stats"])
-		self.status_label.SetLabel(_("Speech cache settings saved."))
-		ui.message(_("Cache settings saved."))
-		gui.messageBox(
-			_("Speech cache settings were saved and will apply to new utterances immediately."),
-			_("Speech cache settings saved"),
-			wx.OK | wx.ICON_INFORMATION,
-		)
+		message = _("Cache settings saved. They apply to new speech at once.")
+		self.status_label.SetLabel(message)
+		ui.message(message)
 
 	def on_clear(self, event):
 		response = gui.messageBox(
