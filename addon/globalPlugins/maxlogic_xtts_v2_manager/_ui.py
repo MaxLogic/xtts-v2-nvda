@@ -1,4 +1,5 @@
 """Native progress and background loading without blocking NVDA's event loop."""
+import math
 import threading
 
 import gui
@@ -97,6 +98,9 @@ class DeferredPanel(wx.Panel):
 		self.retry.Hide()
 		self.GetSizer().Add(self.content, 1, wx.EXPAND)
 		self.Layout()
+		dialog = wx.GetTopLevelParent(self)
+		if hasattr(dialog, "fit_active_page"):
+			wx.CallAfter(dialog.fit_active_page)
 
 
 def load_async(owner, work, complete, failed):
@@ -124,7 +128,115 @@ def load_async(owner, work, complete, failed):
 	threading.Thread(target=worker, name="MaxLogicManagerLoad", daemon=True).start()
 
 
-def run_busy(parent, message, work):
+class ButtonBusy:
+	"""Animate a native button's bitmap without changing its spoken label."""
+	def __init__(self, button):
+		self.button = button
+		self.original = button.GetBitmap()
+		self.original_disabled = button.GetBitmapDisabled()
+		self.frames = self._make_frames(button)
+		self.frame = 0
+		self.timer = wx.Timer(button)
+		button.Bind(wx.EVT_TIMER, self._tick, self.timer)
+		button.Bind(wx.EVT_WINDOW_DESTROY, self._destroyed)
+		self._tick(None)
+		button.GetParent().Layout()
+		self.timer.Start(90)
+
+	@staticmethod
+	def _make_frames(button):
+		size = button.FromDIP(16)
+		colour = wx.SystemSettings.GetColour(wx.SYS_COLOUR_BTNTEXT)
+		frames = []
+		for frame in range(8):
+			bitmap = wx.Bitmap(size, size, 32)
+			dc = wx.MemoryDC(bitmap)
+			dc.SetBackground(wx.Brush(button.GetBackgroundColour()))
+			dc.Clear()
+			dc.SetPen(wx.TRANSPARENT_PEN)
+			for dot in range(8):
+				alpha = 55 + ((dot - frame) % 8) * 28
+				dc.SetBrush(wx.Brush(wx.Colour(colour.Red(), colour.Green(), colour.Blue(), alpha)))
+				angle = dot * math.pi / 4
+				dc.DrawCircle(round(size / 2 + math.cos(angle) * size * .32), round(size / 2 + math.sin(angle) * size * .32), max(1, size // 10) if dot != frame else max(2, size // 7))
+			dc.SelectObject(wx.NullBitmap)
+			frames.append(bitmap)
+		return frames
+
+	def _tick(self, event):
+		if not self.button or self.button.IsBeingDeleted():
+			self.stop()
+			return
+		bitmap = self.frames[self.frame]
+		self.button.SetBitmap(bitmap)
+		self.button.SetBitmapDisabled(bitmap)
+		self.frame = (self.frame + 1) % len(self.frames)
+
+	def _destroyed(self, event):
+		if event.GetEventObject() is self.button:
+			self.stop()
+		event.Skip()
+
+	def stop(self):
+		if self.button is None:
+			return
+		self.timer.Stop()
+		button, self.button = self.button, None
+		if button and not button.IsBeingDeleted():
+			button.Unbind(wx.EVT_TIMER, handler=self._tick, source=self.timer)
+			button.Unbind(wx.EVT_WINDOW_DESTROY, handler=self._destroyed)
+			button.SetBitmap(self.original)
+			button.SetBitmapDisabled(self.original_disabled)
+			button.GetParent().Layout()
+
+
+def run_busy(parent, message, work, *, button=None, completion_message=None):
+	"""Run I/O while the visible manager paints, with input locked until return."""
+	if button is None:
+		focused = wx.Window.FindFocus()
+		if isinstance(focused, wx.Button) and (focused.GetParent() is parent or parent.IsDescendant(focused)):
+			button = focused
+	if button is None:
+		return _run_busy_dialog(parent, message, work, completion_message)
+	top = wx.GetTopLevelParent(parent)
+	if getattr(top, "_operation_busy", False):
+		raise RuntimeError(_("An operation is already running."))
+	indicator = ButtonBusy(button)
+	loop = wx.GUIEventLoop()
+	result, errors = [], []
+	was_enabled = top.IsEnabled()
+	focus = wx.Window.FindFocus()
+	top._operation_busy = True
+	top.Disable()
+	ui.message(message)
+
+	def worker():
+		try:
+			result.append(work())
+		except Exception as error:
+			errors.append(error)
+		finally:
+			wx.CallAfter(loop.Exit, 0)
+
+	try:
+		# Defer starting until the nested loop exists, including instant failures.
+		wx.CallAfter(lambda: threading.Thread(target=worker, name="MaxLogicManagerOperation", daemon=True).start())
+		loop.Run()
+	finally:
+		indicator.stop()
+		if top and not top.IsBeingDeleted():
+			top._operation_busy = False
+			top.Enable(was_enabled)
+			if focus and not focus.IsBeingDeleted() and focus.IsEnabled() and top.IsActive():
+				focus.SetFocus()
+	if errors:
+		raise errors[0]
+	if completion_message:
+		ui.message(completion_message)
+	return result[0]
+
+
+def _run_busy_dialog(parent, message, work, completion_message=None):
 	"""Keep a modal operation and its errors on the UI thread; do I/O in a worker."""
 	dialog = wx.Dialog(parent, title=message, style=wx.DEFAULT_DIALOG_STYLE)
 	sizer = wx.BoxSizer(wx.VERTICAL)
@@ -164,4 +276,6 @@ def run_busy(parent, message, work):
 		dialog.Destroy()
 	if errors:
 		raise errors[0]
+	if completion_message:
+		ui.message(completion_message)
 	return result[0]

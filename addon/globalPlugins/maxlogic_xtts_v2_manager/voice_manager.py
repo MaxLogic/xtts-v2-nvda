@@ -18,7 +18,7 @@ except Exception:
 
 from . import service
 from .clone_voice import CloneVoicePanel
-from ._ui import DeferredPanel, StatusText, load_async, report_loading, run_busy
+from ._ui import ButtonBusy, DeferredPanel, StatusText, load_async, report_loading, run_busy
 
 
 GENDER_FILTERS = [
@@ -230,6 +230,12 @@ class InstalledVoicesPanel(wx.Panel):
 
 	def _set_loading_state(self, is_loading, message=None):
 		report_loading(self, is_loading, message)
+		if is_loading:
+			if getattr(self, "_loading_spinner", None):
+				self._loading_spinner.stop()
+			self._loading_spinner = ButtonBusy(self.refresh_button)
+		elif getattr(self, "_loading_spinner", None):
+			self._loading_spinner.stop()
 		self.preview_language_choice.Enable(not is_loading and not self._preview_in_progress)
 		if is_loading and message:
 			self.setup_status.SetLabel(message)
@@ -306,12 +312,14 @@ class InstalledVoicesPanel(wx.Panel):
 		self._update_preview_button_state()
 		event.Skip()
 
-	def _run_busy(self, message, callback):
-		return run_busy(self, message, callback)
+	def _run_busy(self, message, callback, **kwargs):
+		return run_busy(self, message, callback, **kwargs)
 
 	def _finish_setup(self, result=None, error_message=None):
+		if not self or self.IsBeingDeleted():
+			return
 		if self._setup_busy is not None:
-			del self._setup_busy
+			self._setup_busy.stop()
 			self._setup_busy = None
 		self.setup_button.Enable(True)
 		self.refresh_entries()
@@ -324,13 +332,15 @@ class InstalledVoicesPanel(wx.Panel):
 			)
 			return
 		message = _("XTTS runtime is ready.")
+		ui.message(message)
 		gui.messageBox(message, _("XTTS setup complete"), wx.OK | wx.ICON_INFORMATION)
 
 	def on_setup_runtime(self, event):
 		if self._setup_busy is not None:
 			return
 		self.setup_button.Enable(False)
-		self._setup_busy = wx.BusyInfo(_("Setting up XTTS runtime..."), parent=self)
+		self._setup_busy = ButtonBusy(self.setup_button)
+		ui.message(_("Setting up XTTS runtime..."))
 
 		def _worker():
 			try:
@@ -370,6 +380,7 @@ class InstalledVoicesPanel(wx.Panel):
 			result = self._run_busy(
 				_("Installing local voice..."),
 				lambda: service.install_local_voice(source_path, overwrite=False),
+				button=self.install_button,
 			)
 		except service.DuplicateVoiceError:
 			overwrite = gui.messageBox(
@@ -382,6 +393,7 @@ class InstalledVoicesPanel(wx.Panel):
 			result = self._run_busy(
 				_("Overwriting local voice..."),
 				lambda: service.install_local_voice(source_path, overwrite=True),
+				button=self.install_button,
 			)
 		except Exception as error:
 			log.exception("MaxLogic XTTS v2 local install failed", exc_info=True)
@@ -397,6 +409,7 @@ class InstalledVoicesPanel(wx.Panel):
 		message = _("Installed voice successfully.")
 		if refresh.get("restartRequired"):
 			message += "\n" + _("Restart NVDA to refresh the current synth.")
+		ui.message(_("Voice installed."))
 		gui.messageBox(message, _("Voice installed"), wx.OK | wx.ICON_INFORMATION)
 
 	def on_remove(self, event):
@@ -414,6 +427,7 @@ class InstalledVoicesPanel(wx.Panel):
 			result = self._run_busy(
 				_("Removing local voice..."),
 				lambda: service.remove_local_voice(record.voice_id),
+				button=self.remove_button,
 			)
 		except Exception as error:
 			log.exception("MaxLogic XTTS v2 local remove failed", exc_info=True)
@@ -428,6 +442,7 @@ class InstalledVoicesPanel(wx.Panel):
 		message = _("Removed voice successfully.")
 		if result["refresh"].get("restartRequired"):
 			message += "\n" + _("Restart NVDA to refresh the current synth.")
+		ui.message(_("Voice removed."))
 		gui.messageBox(message, _("Voice removed"), wx.OK | wx.ICON_INFORMATION)
 
 	def on_open_voice_folder(self, event):
@@ -452,6 +467,8 @@ class InstalledVoicesPanel(wx.Panel):
 		if self._preview_playing:
 			self._preview_request_id += 1
 			service.stop_preview()
+			if getattr(self, "_preview_spinner", None):
+				self._preview_spinner.stop()
 			self._preview_in_progress = False
 			self._preview_playing = False
 			self.preview_language_choice.Enable(True)
@@ -471,6 +488,7 @@ class InstalledVoicesPanel(wx.Panel):
 			)
 			return
 		self._preview_source_list = self.voice_list if self.voice_list.GetSelection() != wx.NOT_FOUND else self.builtin_list
+		self._preview_spinner = ButtonBusy(self.preview_button)
 		self._preview_in_progress = True
 		self._preview_playing = False
 		self._preview_request_id += 1
@@ -500,6 +518,7 @@ class InstalledVoicesPanel(wx.Panel):
 		def _on_started():
 			if not self or self.IsBeingDeleted() or request_id != self._preview_request_id:
 				return
+			self._preview_spinner.stop()
 			self._preview_playing = True
 			self._update_preview_lock_state()
 			self._update_preview_button_state()
@@ -508,6 +527,8 @@ class InstalledVoicesPanel(wx.Panel):
 		def _on_complete(status, error_message):
 			if not self or self.IsBeingDeleted() or request_id != self._preview_request_id:
 				return
+			if getattr(self, "_preview_spinner", None):
+				self._preview_spinner.stop()
 			self._preview_in_progress = False
 			self._preview_playing = False
 			self._update_preview_lock_state()
@@ -524,6 +545,7 @@ class InstalledVoicesPanel(wx.Panel):
 					wx.OK | wx.ICON_ERROR,
 				)
 				return
+			ui.message(_("Sample finished."))
 			self.setup_status.SetLabel(_("Sample finished. Choose another voice and press Ctrl+P to play it."))
 			self._restore_preview_focus()
 
@@ -705,6 +727,12 @@ class CatalogVoicesPanel(wx.Panel):
 
 	def _set_loading_state(self, is_loading, message=None):
 		report_loading(self, is_loading, message)
+		if is_loading:
+			if getattr(self, "_loading_spinner", None):
+				self._loading_spinner.stop()
+			self._loading_spinner = ButtonBusy(self.refresh_button)
+		elif getattr(self, "_loading_spinner", None):
+			self._loading_spinner.stop()
 		self.search_text.Enable(not is_loading)
 		self.gender_choice.Enable(not is_loading)
 		self.language_choice.Enable(not is_loading)
@@ -846,8 +874,8 @@ class CatalogVoicesPanel(wx.Panel):
 			self._checked_ids.discard(entry["id"])
 		self._apply_filters()
 
-	def _run_busy(self, message, callback):
-		return run_busy(self, message, callback)
+	def _run_busy(self, message, callback, **kwargs):
+		return run_busy(self, message, callback, **kwargs)
 
 	def _install_entry(self, entry, overwrite):
 		return service.install_catalog_voice(entry, overwrite=overwrite, refresh=False)
@@ -856,6 +884,8 @@ class CatalogVoicesPanel(wx.Panel):
 		if self._preview_playing:
 			self._preview_request_id += 1
 			service.stop_preview()
+			if getattr(self, "_preview_spinner", None):
+				self._preview_spinner.stop()
 			self._preview_in_progress = False
 			self._preview_playing = False
 			self.preview_language_choice.Enable(True)
@@ -879,6 +909,7 @@ class CatalogVoicesPanel(wx.Panel):
 				wx.OK | wx.ICON_WARNING,
 			)
 			return
+		self._preview_spinner = ButtonBusy(self.preview_button)
 		self._preview_in_progress = True
 		self._preview_playing = False
 		self._preview_request_id += 1
@@ -894,6 +925,7 @@ class CatalogVoicesPanel(wx.Panel):
 		def _on_started():
 			if not self or self.IsBeingDeleted() or request_id != self._preview_request_id:
 				return
+			self._preview_spinner.stop()
 			self._preview_playing = True
 			self.result_hint.SetLabel(_("Playing sample for {name}.").format(name=entry.get("displayName", entry["id"])))
 			self._update_action_state()
@@ -901,6 +933,8 @@ class CatalogVoicesPanel(wx.Panel):
 		def _on_complete(status, error_message):
 			if not self or self.IsBeingDeleted() or request_id != self._preview_request_id:
 				return
+			if getattr(self, "_preview_spinner", None):
+				self._preview_spinner.stop()
 			self._preview_in_progress = False
 			self._preview_playing = False
 			self.preview_language_choice.Enable(True)
@@ -918,6 +952,7 @@ class CatalogVoicesPanel(wx.Panel):
 					wx.OK | wx.ICON_ERROR,
 				)
 			else:
+				ui.message(_("Sample finished."))
 				self.result_hint.SetLabel(
 					_format_count_hint(len(self._visible_entries), len(self._entries), len(self._checked_ids))
 				)
@@ -960,7 +995,7 @@ class CatalogVoicesPanel(wx.Panel):
 				else:
 					installed.extend(result["records"])
 
-		self._run_busy(_("Downloading selected voices..."), _initial_pass)
+		self._run_busy(_("Downloading selected voices..."), _initial_pass, button=self.download_button)
 
 		if duplicates:
 			response = gui.messageBox(
@@ -981,12 +1016,12 @@ class CatalogVoicesPanel(wx.Panel):
 						else:
 							overwritten.extend(result["records"])
 
-				self._run_busy(_("Overwriting selected voices..."), _overwrite_pass)
+				self._run_busy(_("Overwriting selected voices..."), _overwrite_pass, button=self.download_button)
 
 		refresh = self._run_busy(_("Refreshing voices..."), lambda: service.refresh_active_synth(
 			reason="%s-batch-install" % self._catalog_name,
 			preferred_voice=(installed or overwritten)[0].voice_id if (installed or overwritten) else None,
-		))
+		), button=self.download_button)
 		self._checked_ids = {entry["id"] for entry, error in failures}
 		self._on_change()
 
@@ -1006,6 +1041,7 @@ class CatalogVoicesPanel(wx.Panel):
 		if not message_lines:
 			message_lines.append(_("No voice changes were applied."))
 		title = _("Voice download complete") if not failures else _("Voice download completed with issues")
+		ui.message(title)
 		gui.messageBox("\n".join(message_lines), title, wx.OK | wx.ICON_INFORMATION)
 
 
@@ -1182,6 +1218,12 @@ class HuggingFaceSearchPanel(wx.Panel):
 
 	def _set_loading_state(self, is_loading, message=None):
 		report_loading(self, is_loading, message)
+		if is_loading:
+			if getattr(self, "_loading_spinner", None):
+				self._loading_spinner.stop()
+			self._loading_spinner = ButtonBusy(self.search_button)
+		elif getattr(self, "_loading_spinner", None):
+			self._loading_spinner.stop()
 		self.search_text.Enable(not is_loading)
 		self.search_button.Enable(not is_loading)
 		self.gender_choice.Enable(not is_loading)
@@ -1343,8 +1385,8 @@ class HuggingFaceSearchPanel(wx.Panel):
 			self._checked_ids.discard(entry["id"])
 		self._apply_filters()
 
-	def _run_busy(self, message, callback):
-		return run_busy(self, message, callback)
+	def _run_busy(self, message, callback, **kwargs):
+		return run_busy(self, message, callback, **kwargs)
 
 	def _install_entry(self, entry, overwrite):
 		return service.install_huggingface_voice(entry, overwrite=overwrite, refresh=False)
@@ -1353,6 +1395,8 @@ class HuggingFaceSearchPanel(wx.Panel):
 		if self._preview_playing:
 			self._preview_request_id += 1
 			service.stop_preview()
+			if getattr(self, "_preview_spinner", None):
+				self._preview_spinner.stop()
 			self._preview_in_progress = False
 			self._preview_playing = False
 			self.preview_language_choice.Enable(True)
@@ -1369,6 +1413,7 @@ class HuggingFaceSearchPanel(wx.Panel):
 				wx.OK | wx.ICON_INFORMATION,
 			)
 			return
+		self._preview_spinner = ButtonBusy(self.preview_button)
 		self._preview_in_progress = True
 		self._preview_playing = False
 		self._preview_request_id += 1
@@ -1384,6 +1429,7 @@ class HuggingFaceSearchPanel(wx.Panel):
 		def _on_started():
 			if not self or self.IsBeingDeleted() or request_id != self._preview_request_id:
 				return
+			self._preview_spinner.stop()
 			self._preview_playing = True
 			self.result_hint.SetLabel(_("Playing sample for {name}.").format(name=entry.get("displayName", entry["id"])))
 			self._update_action_state()
@@ -1391,6 +1437,8 @@ class HuggingFaceSearchPanel(wx.Panel):
 		def _on_complete(status, error_message):
 			if not self or self.IsBeingDeleted() or request_id != self._preview_request_id:
 				return
+			if getattr(self, "_preview_spinner", None):
+				self._preview_spinner.stop()
 			self._preview_in_progress = False
 			self._preview_playing = False
 			self.preview_language_choice.Enable(True)
@@ -1408,6 +1456,7 @@ class HuggingFaceSearchPanel(wx.Panel):
 					wx.OK | wx.ICON_ERROR,
 				)
 			else:
+				ui.message(_("Sample finished."))
 				self.result_hint.SetLabel(
 					_format_count_hint(len(self._visible_entries), len(self._entries), len(self._checked_ids))
 				)
@@ -1441,7 +1490,7 @@ class HuggingFaceSearchPanel(wx.Panel):
 				else:
 					installed.extend(result["records"])
 
-		self._run_busy(_("Installing selected Hugging Face voices..."), _initial_pass)
+		self._run_busy(_("Installing selected Hugging Face voices..."), _initial_pass, button=self.install_button)
 
 		if duplicates:
 			response = gui.messageBox(
@@ -1462,12 +1511,12 @@ class HuggingFaceSearchPanel(wx.Panel):
 						else:
 							overwritten.extend(result["records"])
 
-				self._run_busy(_("Overwriting selected Hugging Face voices..."), _overwrite_pass)
+				self._run_busy(_("Overwriting selected Hugging Face voices..."), _overwrite_pass, button=self.install_button)
 
 		refresh = self._run_busy(_("Refreshing voices..."), lambda: service.refresh_active_synth(
 			reason="huggingface-batch-install",
 			preferred_voice=(installed or overwritten)[0].voice_id if (installed or overwritten) else None,
-		))
+		), button=self.install_button)
 		self._checked_ids = {entry["id"] for entry, error in failures}
 		self._on_change()
 
@@ -1485,6 +1534,7 @@ class HuggingFaceSearchPanel(wx.Panel):
 		if not message_lines:
 			message_lines.append(_("No voice changes were applied."))
 		title = _("Voice installation complete") if not failures else _("Voice installation completed with issues")
+		ui.message(title)
 		gui.messageBox("\n".join(message_lines), title, wx.OK | wx.ICON_INFORMATION)
 
 
@@ -1854,6 +1904,8 @@ class ExtractSamplePanel(ScrolledPanel):
 		return dialog.GetPath().strip() or None
 
 	def _finish_audio_export(self, message, result=None, error_message=None):
+		if not self or self.IsBeingDeleted():
+			return
 		self._set_busy(False)
 		if error_message:
 			gui.messageBox(
@@ -1862,6 +1914,7 @@ class ExtractSamplePanel(ScrolledPanel):
 				wx.OK | wx.ICON_ERROR,
 			)
 			return
+		ui.message(_("Audio saved."))
 		path = result.get("path") if isinstance(result, dict) else None
 		self.status_label.SetLabel(
 			_("Saved audio file: {path}").format(path=path or _("unknown path"))
@@ -1896,7 +1949,13 @@ class ExtractSamplePanel(ScrolledPanel):
 		self.speed_choice.Enable(enabled and self._media_loaded)
 		self.save_button.Enable((self._source_info is not None) and self._save_busy is None and not self._busy)
 
-	def _set_busy(self, is_busy, message=None):
+	def _set_busy(self, is_busy, message=None, button=None):
+		if not self or self.IsBeingDeleted():
+			return
+		if not is_busy and getattr(self, "_operation_spinner", None):
+			self._operation_spinner.stop()
+		elif is_busy and button is not None:
+			self._operation_spinner = ButtonBusy(button)
 		self._busy = bool(is_busy)
 		for control in (
 			self.browse_button,
@@ -2203,6 +2262,8 @@ class ExtractSamplePanel(ScrolledPanel):
 		self._set_working_copy_modified(False)
 
 	def _finish_source_load(self, display_path, working_copy=None, source_info=None, error_message=None):
+		if not self or self.IsBeingDeleted():
+			return
 		self._working_copy = working_copy if error_message is None else None
 		self._source_display_path = display_path if error_message is None else None
 		self._source_path = working_copy.get("workingPath") if working_copy is not None and error_message is None else None
@@ -2240,6 +2301,7 @@ class ExtractSamplePanel(ScrolledPanel):
 			base_name = os.path.splitext(os.path.basename(display_path))[0].replace("_", " ").strip()
 			self.voice_name_ctrl.SetValue(base_name)
 		self._set_transport_ready(True)
+		ui.message(_("Source ready."))
 		if loaded_in_transport:
 			self.status_label.SetLabel(_("Source ready. Set markers and preview the selection."))
 		else:
@@ -2270,7 +2332,7 @@ class ExtractSamplePanel(ScrolledPanel):
 		self._source_display_path = None
 		self._source_info = None
 		self._set_transport_ready(False)
-		self._set_busy(True, _("Loading source audio..."))
+		self._set_busy(True, _("Loading source audio..."), button=self.browse_button)
 
 		def _worker():
 			working_copy = None
@@ -2421,6 +2483,8 @@ class ExtractSamplePanel(ScrolledPanel):
 		self._start_playback(start_ms=start_ms, stop_at_ms=end_ms, preview_action="selection")
 
 	def _finish_delete_snippet(self, start_ms, result=None, error_message=None):
+		if not self or self.IsBeingDeleted():
+			return
 		self._set_busy(False)
 		if error_message:
 			gui.messageBox(
@@ -2429,6 +2493,7 @@ class ExtractSamplePanel(ScrolledPanel):
 				wx.OK | wx.ICON_ERROR,
 			)
 			return
+		ui.message(_("Snippet deleted."))
 		self._source_info = result
 		self._set_working_copy_modified(True)
 		duration_ms = self._current_duration_ms()
@@ -2483,7 +2548,7 @@ class ExtractSamplePanel(ScrolledPanel):
 			return
 		if not os.path.splitext(target_path)[1]:
 			target_path += ".wav"
-		self._set_busy(True, _("Saving selected snippet as audio..."))
+		self._set_busy(True, _("Saving selected snippet as audio..."), button=self.save_snippet_button)
 
 		def _worker():
 			try:
@@ -2513,7 +2578,7 @@ class ExtractSamplePanel(ScrolledPanel):
 			return
 		if not os.path.splitext(target_path)[1]:
 			target_path += extension
-		self._set_busy(True, _("Saving edited temporary audio..."))
+		self._set_busy(True, _("Saving edited temporary audio..."), button=self.save_modified_audio_button)
 
 		def _worker():
 			try:
@@ -2547,7 +2612,7 @@ class ExtractSamplePanel(ScrolledPanel):
 		if response != wx.YES:
 			return
 		self._reset_media_control()
-		self._set_busy(True, _("Deleting selected snippet from temporary audio..."))
+		self._set_busy(True, _("Deleting selected snippet from temporary audio..."), button=self.delete_snippet_button)
 
 		def _worker():
 			try:
@@ -2574,8 +2639,10 @@ class ExtractSamplePanel(ScrolledPanel):
 		return response == wx.YES
 
 	def _finish_save(self, result=None, error_message=None, duplicate=False):
+		if not self or self.IsBeingDeleted():
+			return
 		if self._save_busy is not None:
-			del self._save_busy
+			self._save_busy.stop()
 			self._save_busy = None
 		self._set_busy(False)
 		if duplicate:
@@ -2599,6 +2666,7 @@ class ExtractSamplePanel(ScrolledPanel):
 		message = _("Saved XTTS profile successfully.")
 		if result["refresh"].get("restartRequired"):
 			message += "\n" + _("Restart NVDA to refresh the current synth.")
+		ui.message(_("Profile saved."))
 		gui.messageBox(message, _("Profile saved"), wx.OK | wx.ICON_INFORMATION)
 
 	def _begin_save(self, overwrite=False):
@@ -2617,7 +2685,9 @@ class ExtractSamplePanel(ScrolledPanel):
 			return
 		if not self._selection_warning(length_ms):
 			return
-		self._save_busy = wx.BusyInfo(_("Saving XTTS profile..."), parent=self)
+		normalize = self.normalize_checkbox.GetValue()
+		trim_silence = self.trim_checkbox.GetValue()
+		self._save_busy = ButtonBusy(self.save_button)
 		self._set_busy(
 			True,
 			_("Extracting audio and saving the XTTS profile..."),
@@ -2630,8 +2700,8 @@ class ExtractSamplePanel(ScrolledPanel):
 					voice_name=voice_name,
 					start_ms=start_ms,
 					end_ms=end_ms,
-					normalize=self.normalize_checkbox.GetValue(),
-					trim_silence=self.trim_checkbox.GetValue(),
+					normalize=normalize,
+					trim_silence=trim_silence,
 					overwrite=overwrite,
 				)
 			except service.DuplicateVoiceError:
@@ -2745,6 +2815,12 @@ class SpeechCachePanel(ScrolledPanel):
 
 	def _set_loading_state(self, is_loading, message=None):
 		report_loading(self, is_loading, message)
+		if is_loading:
+			if getattr(self, "_loading_spinner", None):
+				self._loading_spinner.stop()
+			self._loading_spinner = ButtonBusy(self.refresh_button)
+		elif getattr(self, "_loading_spinner", None):
+			self._loading_spinner.stop()
 		self.enable_checkbox.Enable(not is_loading)
 		self.mode_choice.Enable(not is_loading)
 		self.max_size_ctrl.Enable(not is_loading)
@@ -2758,8 +2834,8 @@ class SpeechCachePanel(ScrolledPanel):
 			self.status_label.SetLabel(message or _("Loading speech cache settings..."))
 		self.Layout()
 
-	def _run_busy(self, message, callback):
-		return run_busy(self, message, callback)
+	def _run_busy(self, message, callback, **kwargs):
+		return run_busy(self, message, callback, **kwargs)
 
 	def _selected_mode_key(self):
 		index = self.mode_choice.GetSelection()
@@ -2896,6 +2972,7 @@ class SpeechCachePanel(ScrolledPanel):
 			payload = self._run_busy(
 				_("Saving speech cache settings..."),
 				lambda: service.save_speech_cache_settings(settings),
+				button=self.save_button,
 			)
 		except Exception as error:
 			log.exception("MaxLogic XTTS v2 speech cache settings save failed", exc_info=True)
@@ -2907,6 +2984,7 @@ class SpeechCachePanel(ScrolledPanel):
 			return
 		self._load_into_controls(payload["settings"], payload["stats"])
 		self.status_label.SetLabel(_("Speech cache settings saved."))
+		ui.message(_("Cache settings saved."))
 		gui.messageBox(
 			_("Speech cache settings were saved and will apply to new utterances immediately."),
 			_("Speech cache settings saved"),
@@ -2922,7 +3000,7 @@ class SpeechCachePanel(ScrolledPanel):
 		if response != wx.YES:
 			return
 		try:
-			stats = self._run_busy(_("Clearing speech cache..."), service.clear_speech_cache)
+			stats = self._run_busy(_("Clearing speech cache..."), service.clear_speech_cache, button=self.clear_button)
 		except Exception as error:
 			log.exception("MaxLogic XTTS v2 clear speech cache failed", exc_info=True)
 			gui.messageBox(
@@ -2940,7 +3018,7 @@ class SpeechCachePanel(ScrolledPanel):
 
 	def on_compact(self, event):
 		try:
-			payload = self._run_busy(_("Compacting speech cache..."), service.compact_speech_cache)
+			payload = self._run_busy(_("Compacting speech cache..."), service.compact_speech_cache, button=self.compact_button)
 		except Exception as error:
 			log.exception("MaxLogic XTTS v2 compact speech cache failed", exc_info=True)
 			gui.messageBox(
