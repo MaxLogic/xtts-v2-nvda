@@ -18,7 +18,7 @@ except Exception:
 
 from . import service
 from .clone_voice import CloneVoicePanel
-from ._ui import ButtonBusy, DeferredPanel, StatusText, load_async, report_loading, run_busy
+from ._ui import ButtonBusy, DeferredPanel, StatusText, load_async, remember_focus, report_loading, restore_focus, run_busy
 
 
 GENDER_FILTERS = [
@@ -231,6 +231,7 @@ class InstalledVoicesPanel(wx.Panel):
 	def _set_loading_state(self, is_loading, message=None):
 		report_loading(self, is_loading, message)
 		if is_loading:
+			remember_focus(self)
 			if getattr(self, "_loading_spinner", None):
 				self._loading_spinner.stop()
 			self._loading_spinner = ButtonBusy(self.refresh_button)
@@ -242,6 +243,8 @@ class InstalledVoicesPanel(wx.Panel):
 		self._update_preview_lock_state(is_loading=is_loading)
 		self._update_preview_button_state(is_loading=is_loading)
 		self.Layout()
+		if not is_loading:
+			restore_focus(self, self.voice_list if self._user_voices else self.install_button)
 
 	def _apply_inventory(self, inventory, setup_status):
 		self._user_voices = inventory["user"]
@@ -724,6 +727,7 @@ class CatalogVoicesPanel(wx.Panel):
 	def _set_loading_state(self, is_loading, message=None):
 		report_loading(self, is_loading, message)
 		if is_loading:
+			remember_focus(self)
 			if getattr(self, "_loading_spinner", None):
 				self._loading_spinner.stop()
 			self._loading_spinner = ButtonBusy(self.refresh_button)
@@ -750,6 +754,8 @@ class CatalogVoicesPanel(wx.Panel):
 		else:
 			self._update_preview_lock_state()
 		self.Layout()
+		if not is_loading:
+			restore_focus(self, self.search_text)
 
 	def _apply_refresh_payload(self, entries, payload, inventory):
 		self._entries = entries
@@ -1215,6 +1221,7 @@ class HuggingFaceSearchPanel(wx.Panel):
 	def _set_loading_state(self, is_loading, message=None):
 		report_loading(self, is_loading, message)
 		if is_loading:
+			remember_focus(self)
 			if getattr(self, "_loading_spinner", None):
 				self._loading_spinner.stop()
 			self._loading_spinner = ButtonBusy(self.search_button)
@@ -1238,6 +1245,8 @@ class HuggingFaceSearchPanel(wx.Panel):
 			self._update_action_state()
 			self._update_preview_lock_state()
 		self.Layout()
+		if not is_loading:
+			restore_focus(self, self.search_text)
 
 	def _refresh_inventory_state(self):
 		inventory = service.list_voice_inventory()
@@ -2812,6 +2821,7 @@ class SpeechCachePanel(ScrolledPanel):
 	def _set_loading_state(self, is_loading, message=None):
 		report_loading(self, is_loading, message)
 		if is_loading:
+			remember_focus(self)
 			if getattr(self, "_loading_spinner", None):
 				self._loading_spinner.stop()
 			self._loading_spinner = ButtonBusy(self.refresh_button)
@@ -2829,6 +2839,8 @@ class SpeechCachePanel(ScrolledPanel):
 		if is_loading:
 			self.status_label.SetLabel(message or _("Loading speech cache settings..."))
 		self.Layout()
+		if not is_loading:
+			restore_focus(self, self.enable_checkbox)
 
 	def _run_busy(self, message, callback, **kwargs):
 		return run_busy(self, message, callback, **kwargs)

@@ -49,6 +49,34 @@ def report_loading(owner, is_loading, message=None):
 		wx.CallAfter(dialog.refresh_loading_feedback)
 
 
+def remember_focus(owner):
+	"""Call before disabling a page's controls for a reload.
+
+	Windows leaves the focus on a control that becomes disabled, and the
+	keyboard then reaches nothing until the user clicks or switches windows.
+	"""
+	if getattr(owner, "_focus_before_loading", None) is not None:
+		return
+	focused = wx.Window.FindFocus()
+	if focused is not None and owner.IsDescendant(focused):
+		owner._focus_before_loading = focused
+
+
+def restore_focus(owner, fallback):
+	"""Call after re-enabling the controls. Does nothing if the user has moved on."""
+	target = getattr(owner, "_focus_before_loading", None)
+	owner._focus_before_loading = None
+	if target is None or not owner.IsShownOnScreen() or not wx.GetTopLevelParent(owner).IsActive():
+		return
+	current = wx.Window.FindFocus()
+	if current is not None and current is not target and current.IsEnabled():
+		return
+	if not target or target.IsBeingDeleted() or not target.IsEnabled():
+		target = fallback
+	if target and target.IsEnabled():
+		target.SetFocus()
+
+
 class DeferredPanel(wx.Panel):
 	"""Construct an optional page only after the user selects it."""
 	def __init__(self, parent, factory):
