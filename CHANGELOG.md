@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.1.7
+
+- Fix Close, window X and Escape; add Ctrl+F4 to close the manager.
+- Start loading XTTS in the background when the manager opens, reusing an existing helper.
+- Play and stop selected input recordings on Clone Voice.
+- Show reference contribution to speech-style conditioning and warn before cloning when recordings fall outside its window.
+- Add Balance speech style (on by default): the style conditioning budget is shared across all recordings, taken from the middle of each, instead of only the start of the joined audio.
+- Default to the released XTTS v2 model config: 30 / 30 / 4 second conditioning and repetition penalty 5. The previous defaults remain available as Function defaults presets.
+- Keep reference order in the conditioning cache key, because stock XTTS conditioning depends on it. Existing cached conditioning is rebuilt once.
+
+## 0.1.6
+
+- Clone temporary test voices without naming or installing them; save explicitly and confirm replacements.
+- Preserve the previous voice if replacement fails.
+- Add custom sample text and a reset button; stream and cache test samples.
+- Fit the Clone Voice form without a scrollbox, including advanced settings.
+- Show button spinners during long operations and announce completion through NVDA.
+
 ## 0.1.5
 
 - Update the tested helper stack to coqui-tts 0.27.5 and Transformers 4.57.6.

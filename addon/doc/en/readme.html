@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
 <link rel="stylesheet" type="text/css" href="../style.css" media="screen">
-<title>MaxLogic XTTS v2 0.1.5</title>
+<title>MaxLogic XTTS v2 0.1.7</title>
 </head>
 <body>
 <h1>MaxLogic XTTS v2 for NVDA</h1>
@@ -117,12 +117,13 @@
 <li>The add-on can be managed from NVDA even when the synth itself is unavailable because the helper environment or voice profiles have not been installed yet.</li>
 </ul>
 <h2>Keyboard navigation and feedback</h2>
-<p>Use <code>Ctrl+Tab</code> and <code>Ctrl+Shift+Tab</code> to change tabs, then <code>Tab</code> and <code>Shift+Tab</code> to move between controls. Use arrow keys in lists and <code>Space</code> to check a voice for download. Button access keys are shown by Windows when you press <code>Alt</code>. <code>Escape</code> closes the manager when no operation is running.</p>
+<p>Use <code>Ctrl+Tab</code> and <code>Ctrl+Shift+Tab</code> to change tabs, then <code>Tab</code> and <code>Shift+Tab</code> to move between controls. Use arrow keys in lists and <code>Space</code> to check a voice for download. Button access keys are shown by Windows when you press <code>Alt</code>. <code>Escape</code>, <code>Ctrl+F4</code>, Close and the window X close the manager when no operation is running.</p>
 <p>Optional pages load when selected. Downloads, cache operations, and voice installation run in the background with progress feedback. Status and voice details are read-only text fields: focus them to review or copy their contents. The sample editor and cache page scroll to keep focused controls in view. Closing waits while an audio edit or save is running.</p>
 <h3>Installed voice previews</h3>
 <p>Select a voice in either installed-voice list and press <code>Ctrl+P</code> or <code>Alt+P</code> to play its sample. Press the shortcut again during playback to stop it. When playback finishes, focus returns to the same list, so you can select the next voice with an arrow key and press <code>Ctrl+P</code> again. Focus is not moved if you switched to another application or tab.</p>
 <p>Use <strong>Open voice folder</strong> (<code>Alt+O</code>) to open the selected profile's containing folder in File Explorer. This works for user-installed and packaged profiles.</p>
 <p>The <strong>Page status</strong> field reports loading for the selected tab. NVDA announces loading and completion while the manager is active.</p>
+<p>Opening the manager starts loading XTTS in a background thread if its preview helper is not already running. You can select recordings while it loads and close the manager without waiting for startup. The loaded helper remains available for later cloning and synthesis until NVDA exits. Background loading does not generate a test sentence.</p>
 <p>Installed-voice previews are cached as complete WAV files under <code>%APPDATA%\nvda\maxlogicXTTSv2\cache\preview-wav</code>. A replay with the same voice files, sample text, and language uses that file without starting the speech model. Changing the voice files or preview language produces a new cache entry. The first uncached preview still needs to load the XTTS model; after startup it streams audio as it becomes available. If playback is stopped, generation may finish in the background to complete the cached sample.</p>
 <h2>Add-on identity</h2>
 <ul>
@@ -134,22 +135,28 @@
 <p>This release targets NVDA 2026.2. The minimum supported version is 2024.1.</p>
 <p>Run the repository checks with <code>python -m unittest discover -s tests -v</code>. Runtime synthesis and physical keyboard/speech checks are separate from these tests.</p>
 <h3>Clone Voice</h3>
-<p>Open <strong>Clone Voice</strong>, add one or more clear recordings of the same speaker, then enter a unique voice name and choose the default preview language. Use <strong>Extract Sample</strong> first when a recording needs trimming. <strong>Create voice</strong> computes and saves the voice conditioning and copies the recordings into the user voice profile. Existing voices are preserved; choose another name if it is already used. After creation, <strong>Play created voice sample</strong> previews the saved profile.</p>
+<p>Open <strong>Clone Voice</strong>, add one or more clear recordings of the same speaker, and choose the default language and presets. Use <strong>Extract Sample</strong> first when a recording needs trimming. <strong>Clone for testing</strong> (Alt+C) prepares a temporary voice without asking for a name or adding anything to Installed.</p>
+<p>Use <strong>Sample text</strong> (Alt+T) to enter your own text, then <strong>Play sample</strong> (Alt+P). <strong>Reset to default text</strong> (Alt+D) restores the default for the selected language. Matching samples use the preview cache; new samples stream as they are generated.</p>
+<p>Choose <strong>Save voice</strong> (Alt+S) when you want to keep the result. Enter a name, then confirm replacement if that voice already exists. Cancelling keeps your test clone available. Saving reuses the prepared conditioning. Closing the manager discards temporary test files; saved voices remain installed.</p>
 <p>Reference volume normalization is optional and off by default. <strong>Show advanced settings</strong> reveals:</p>
 <ul>
 <li><strong>Maximum seconds per recording</strong> (default 30): how much of each recording XTTS reads.</li>
 <li><strong>Total conditioning seconds</strong> (default 6): how much of the joined recordings is used for GPT conditioning.</li>
 <li><strong>Conditioning chunk seconds</strong> (default 6): chunk size within that conditioning audio; it must not exceed the total.</li>
 </ul>
-<p>Longer values do not guarantee better results. These settings affect voice conditioning; they are not speaking-speed or synthesis-temperature controls. Model startup can take tens of seconds. Creation runs in a worker while NVDA remains responsive, and the status dialog closes when it finishes. The created profile appears in Installed, where its folder can be opened.</p>
+<p>Longer values do not guarantee better results. These settings affect voice conditioning; they are not speaking-speed or synthesis-temperature controls. Model startup can take tens of seconds. Cloning runs in a worker while a spinner appears on its button. NVDA announces completion using the current voice. The dialog grows to fit the cloning controls, including advanced settings. On a smaller screen, advanced settings open in a separate fitted dialog. After saving, the profile appears in Installed, where its folder can be opened.</p>
 <h3>Choosing recordings and presets</h3>
+<p>Select one input in <strong>Reference recordings</strong>, then choose <strong>Play selected recording</strong> (Alt+I) to listen to the original audio. The same button stops playback. Input playback does not require the XTTS model and stops when you remove the recording, start a generated sample, or close the manager.</p>
+<p><strong>Balance speech style across all recordings</strong> (Alt+B, on by default) changes how the speech-style budget (Total conditioning seconds) is used. Stock XTTS joins the recordings and uses only the first seconds, so a short fragment listed first can take most of the budget and later recordings add no style. With balancing, each recording gets an equal share, taken from its middle; a recording shorter than its share passes the remainder to the others, and list order no longer matters. For example, with 12 seconds and recordings of 2.5 seconds, 19 minutes and 53 seconds, the shares are about 2.5, 4.8 and 4.8 seconds. Speaker identity is computed the same way in both modes. Clear this option to reproduce stock XTTS behavior.</p>
+<p><strong>Check recordings</strong> also reports how much of each file falls inside the speech-style conditioning window. Before cloning, a warning identifies recordings estimated to contribute no speech style and lets you return to the inputs or continue. These recordings still contribute to speaker identity. If edge trimming is enabled, the report is an estimate before trimming; shorter prepared inputs can allow later recordings into the window.</p>
 <p>The Clone Voice tab has <strong>Help: choosing recordings</strong> (Alt+H) and <strong>Check recordings</strong> (Alt+K). The checker reports duration, channels and sample rate without loading XTTS. It suggests PCM WAV or FLAC conversion only if decoding fails; stereo or 48 kHz alone does not require conversion. XTTS handles mono mixing and resampling internally. Its output is 24 kHz.</p>
 <p>Use clear recordings of one speaker with consistent sound and little edge silence. Roughly 6–15 seconds per clip is a starting point, not a quality guarantee. Several clean references may help, but more files are not automatically better than one good recording. Speaker embeddings are averaged; GPT conditioning uses the selected duration from joined recordings in list order. Optional edge trimming preserves original files, retains about 100 ms of margin and keeps internal pauses. It is off by default.</p>
-<p>Reference conditioning presets use maximum-reference / total-conditioning / chunk seconds: Default <strong>30 / 6 / 6</strong>, Extended <strong>30 / 12 / 6</strong>, Longer <strong>30 / 30 / 6</strong>. Advanced controls remain editable.</p>
+<p>Reference conditioning presets use maximum-reference / total-conditioning / chunk seconds: XTTS model config <strong>30 / 30 / 4</strong> (default), Function defaults <strong>30 / 6 / 6</strong>, Extended <strong>30 / 12 / 6</strong>, Longer <strong>30 / 30 / 6</strong>. The model config values come from the released XTTS v2 <code>config.json</code> and are what Coqui's high-level synthesis uses; the function defaults are the bare <code>get_conditioning_latents()</code> keyword defaults. XTTS has no hard length limit: each chunk becomes a fixed-size style summary and the summaries are averaged, so longer totals mainly add averaging and time. The model was trained on 3 to 6 second chunks. Advanced controls remain editable.</p>
 <p>Speech generation presets are separate and saved with each newly created voice:</p>
 <p>| Preset | Temperature | Top p | Top k | Repetition penalty | Speed |
 | --- | --- | --- | --- | --- | --- |
-| XTTS inference defaults | 0.75 | 0.85 | 50 | 10 | 1.0 |
+| XTTS model config (default) | 0.75 | 0.85 | 50 | 5 | 1.0 |
+| XTTS inference function defaults | 0.75 | 0.85 | 50 | 10 | 1.0 |
 | Suggested range: midpoint | 0.75 | 0.85 | 50 | 2 | 1.0 |
 | Suggested range: lower | 0.65 | 0.80 | 50 | 2 | 1.0 |
 | Suggested range: upper | 0.85 | 0.90 | 50 | 2 | 1.0 |</p>

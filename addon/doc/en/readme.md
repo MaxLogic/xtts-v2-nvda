@@ -122,7 +122,7 @@ The bundled XTTS v2 integration normalizes NVDA language tags to the language se
 
 ## Keyboard navigation and feedback
 
-Use `Ctrl+Tab` and `Ctrl+Shift+Tab` to change tabs, then `Tab` and `Shift+Tab` to move between controls. Use arrow keys in lists and `Space` to check a voice for download. Button access keys are shown by Windows when you press `Alt`. `Escape` closes the manager when no operation is running.
+Use `Ctrl+Tab` and `Ctrl+Shift+Tab` to change tabs, then `Tab` and `Shift+Tab` to move between controls. Use arrow keys in lists and `Space` to check a voice for download. Button access keys are shown by Windows when you press `Alt`. `Escape`, `Ctrl+F4`, Close and the window X close the manager when no operation is running.
 
 Optional pages load when selected. Downloads, cache operations, and voice installation run in the background with progress feedback. Status and voice details are read-only text fields: focus them to review or copy their contents. The sample editor and cache page scroll to keep focused controls in view. Closing waits while an audio edit or save is running.
 
@@ -133,6 +133,8 @@ Select a voice in either installed-voice list and press `Ctrl+P` or `Alt+P` to p
 Use **Open voice folder** (`Alt+O`) to open the selected profile's containing folder in File Explorer. This works for user-installed and packaged profiles.
 
 The **Page status** field reports loading for the selected tab. NVDA announces loading and completion while the manager is active.
+
+Opening the manager starts loading XTTS in a background thread if its preview helper is not already running. You can select recordings while it loads and close the manager without waiting for startup. The loaded helper remains available for later cloning and synthesis until NVDA exits. Background loading does not generate a test sentence.
 
 Installed-voice previews are cached as complete WAV files under `%APPDATA%\nvda\maxlogicXTTSv2\cache\preview-wav`. A replay with the same voice files, sample text, and language uses that file without starting the speech model. Changing the voice files or preview language produces a new cache entry. The first uncached preview still needs to load the XTTS model; after startup it streams audio as it becomes available. If playback is stopped, generation may finish in the background to complete the cached sample.
 
@@ -150,7 +152,11 @@ Run the repository checks with `python -m unittest discover -s tests -v`. Runtim
 
 ### Clone Voice
 
-Open **Clone Voice**, add one or more clear recordings of the same speaker, then enter a unique voice name and choose the default preview language. Use **Extract Sample** first when a recording needs trimming. **Create voice** computes and saves the voice conditioning and copies the recordings into the user voice profile. Existing voices are preserved; choose another name if it is already used. After creation, **Play created voice sample** previews the saved profile.
+Open **Clone Voice**, add one or more clear recordings of the same speaker, and choose the default language and presets. Use **Extract Sample** first when a recording needs trimming. **Clone for testing** (Alt+C) prepares a temporary voice without asking for a name or adding anything to Installed.
+
+Use **Sample text** (Alt+T) to enter your own text, then **Play sample** (Alt+P). **Reset to default text** (Alt+D) restores the default for the selected language. Matching samples use the preview cache; new samples stream as they are generated.
+
+Choose **Save voice** (Alt+S) when you want to keep the result. Enter a name, then confirm replacement if that voice already exists. Cancelling keeps your test clone available. Saving reuses the prepared conditioning. Closing the manager discards temporary test files; saved voices remain installed.
 
 Reference volume normalization is optional and off by default. **Show advanced settings** reveals:
 
@@ -158,22 +164,29 @@ Reference volume normalization is optional and off by default. **Show advanced s
 - **Total conditioning seconds** (default 6): how much of the joined recordings is used for GPT conditioning.
 - **Conditioning chunk seconds** (default 6): chunk size within that conditioning audio; it must not exceed the total.
 
-Longer values do not guarantee better results. These settings affect voice conditioning; they are not speaking-speed or synthesis-temperature controls. Model startup can take tens of seconds. Creation runs in a worker while NVDA remains responsive, and the status dialog closes when it finishes. The created profile appears in Installed, where its folder can be opened.
+Longer values do not guarantee better results. These settings affect voice conditioning; they are not speaking-speed or synthesis-temperature controls. Model startup can take tens of seconds. Cloning runs in a worker while a spinner appears on its button. NVDA announces completion using the current voice. The dialog grows to fit the cloning controls, including advanced settings. On a smaller screen, advanced settings open in a separate fitted dialog. After saving, the profile appears in Installed, where its folder can be opened.
 
 
 ### Choosing recordings and presets
+
+Select one input in **Reference recordings**, then choose **Play selected recording** (Alt+I) to listen to the original audio. The same button stops playback. Input playback does not require the XTTS model and stops when you remove the recording, start a generated sample, or close the manager.
+
+**Balance speech style across all recordings** (Alt+B, on by default) changes how the speech-style budget (Total conditioning seconds) is used. Stock XTTS joins the recordings and uses only the first seconds, so a short fragment listed first can take most of the budget and later recordings add no style. With balancing, each recording gets an equal share, taken from its middle; a recording shorter than its share passes the remainder to the others, and list order no longer matters. For example, with 12 seconds and recordings of 2.5 seconds, 19 minutes and 53 seconds, the shares are about 2.5, 4.8 and 4.8 seconds. Speaker identity is computed the same way in both modes. Clear this option to reproduce stock XTTS behavior.
+
+**Check recordings** also reports how much of each file falls inside the speech-style conditioning window. Before cloning, a warning identifies recordings estimated to contribute no speech style and lets you return to the inputs or continue. These recordings still contribute to speaker identity. If edge trimming is enabled, the report is an estimate before trimming; shorter prepared inputs can allow later recordings into the window.
 
 The Clone Voice tab has **Help: choosing recordings** (Alt+H) and **Check recordings** (Alt+K). The checker reports duration, channels and sample rate without loading XTTS. It suggests PCM WAV or FLAC conversion only if decoding fails; stereo or 48 kHz alone does not require conversion. XTTS handles mono mixing and resampling internally. Its output is 24 kHz.
 
 Use clear recordings of one speaker with consistent sound and little edge silence. Roughly 6–15 seconds per clip is a starting point, not a quality guarantee. Several clean references may help, but more files are not automatically better than one good recording. Speaker embeddings are averaged; GPT conditioning uses the selected duration from joined recordings in list order. Optional edge trimming preserves original files, retains about 100 ms of margin and keeps internal pauses. It is off by default.
 
-Reference conditioning presets use maximum-reference / total-conditioning / chunk seconds: Default **30 / 6 / 6**, Extended **30 / 12 / 6**, Longer **30 / 30 / 6**. Advanced controls remain editable.
+Reference conditioning presets use maximum-reference / total-conditioning / chunk seconds: XTTS model config **30 / 30 / 4** (default), Function defaults **30 / 6 / 6**, Extended **30 / 12 / 6**, Longer **30 / 30 / 6**. The model config values come from the released XTTS v2 `config.json` and are what Coqui's high-level synthesis uses; the function defaults are the bare `get_conditioning_latents()` keyword defaults. XTTS has no hard length limit: each chunk becomes a fixed-size style summary and the summaries are averaged, so longer totals mainly add averaging and time. The model was trained on 3 to 6 second chunks. Advanced controls remain editable.
 
 Speech generation presets are separate and saved with each newly created voice:
 
 | Preset | Temperature | Top p | Top k | Repetition penalty | Speed |
 | --- | --- | --- | --- | --- | --- |
-| XTTS inference defaults | 0.75 | 0.85 | 50 | 10 | 1.0 |
+| XTTS model config (default) | 0.75 | 0.85 | 50 | 5 | 1.0 |
+| XTTS inference function defaults | 0.75 | 0.85 | 50 | 10 | 1.0 |
 | Suggested range: midpoint | 0.75 | 0.85 | 50 | 2 | 1.0 |
 | Suggested range: lower | 0.65 | 0.80 | 50 | 2 | 1.0 |
 | Suggested range: upper | 0.85 | 0.90 | 50 | 2 | 1.0 |
