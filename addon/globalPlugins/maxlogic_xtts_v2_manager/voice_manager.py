@@ -262,7 +262,7 @@ class InstalledVoicesPanel(wx.Panel):
 		if not self or self.IsBeingDeleted() or generation != self._refresh_generation:
 			return
 		if error_message:
-			log.exception("MaxLogic XTTS v2 installed voices refresh failed")
+			log.error("MaxLogic XTTS v2 installed voices refresh failed: %s", error_message)
 			self.setup_status.SetLabel(_("Unable to load installed voices right now."))
 			self._set_loading_state(False)
 			return
@@ -773,7 +773,7 @@ class CatalogVoicesPanel(wx.Panel):
 		if not self or self.IsBeingDeleted() or generation != self._refresh_generation:
 			return
 		if error_message:
-			log.exception("MaxLogic XTTS v2 catalog refresh failed. catalog=%s", self._catalog_name)
+			log.error("MaxLogic XTTS v2 catalog refresh failed. catalog=%s error=%s", self._catalog_name, error_message)
 			self.catalog_hint.SetLabel(_("Catalog could not be loaded right now."))
 			self.result_hint.SetLabel("")
 			self.empty_hint.SetLabel(_("Try again in a moment."))
@@ -1260,6 +1260,7 @@ class HuggingFaceSearchPanel(wx.Panel):
 		if not self or self.IsBeingDeleted() or generation != self._search_generation:
 			return
 		if error_message:
+			log.error("MaxLogic XTTS v2 Hugging Face search failed: %s", error_message)
 			self.search_hint.SetLabel(_("Hugging Face results could not be loaded right now."))
 			self.result_hint.SetLabel("")
 			self.detail_hint.SetLabel("")
