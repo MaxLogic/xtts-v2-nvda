@@ -82,6 +82,7 @@ class SynthDriver(synthDriverHandler.SynthDriver):
 		self._generation = 0
 		self._terminated = False
 		self._player = None
+		self._voice_warm_lock = threading.Lock()
 		self._worker = threading.Thread(target=self._speech_worker, name="MaxLogicXTTSV2Speech", daemon=True)
 		self._worker.start()
 
@@ -517,6 +518,18 @@ class SynthDriver(synthDriverHandler.SynthDriver):
 	def _set_voice(self, value):
 		if value not in self._availableVoices:
 			raise KeyError("Unknown voice: %s" % value)
-		self._engine.set_voice(value)
 		self._voice = value
 		log.info("MaxLogic XTTS v2 voice changed to %s", value)
+		# Every speech request names its voice, so the engine call only warms the voice up.
+		# It waits for running synthesis, which must not freeze NVDA's settings ring.
+		threading.Thread(target=self._warm_voice, args=(value,), name="MaxLogicXTTSV2VoiceWarmup", daemon=True).start()
+
+	def _warm_voice(self, value):
+		with self._voice_warm_lock:
+			# Skip voices the user has already moved past.
+			if value != self._voice or self._terminated:
+				return
+			try:
+				self._engine.set_voice(value)
+			except Exception:
+				log.debug("MaxLogic XTTS v2 voice warmup failed for %s", value, exc_info=True)

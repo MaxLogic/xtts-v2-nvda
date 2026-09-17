@@ -90,12 +90,18 @@ class _SlowEngine:
         self.synthesizing = threading.Event()
         self._stop = threading.Event()
         self._active_generation = None
+        self.voice_requested = threading.Event()
+        self.voice_release = threading.Event()
 
     def list_voices(self): return ["test"]
     def reload_voices(self, preferred_voice=None): return "test"
     def get_status(self): return {"providers": []}
-    def set_voice(self, voice): pass
     def close(self): pass
+
+    def set_voice(self, voice):
+        # The helper warms the voice up, and waits for any running synthesis first.
+        self.voice_requested.set()
+        self.voice_release.wait(10)
 
     def cancel(self, generation):
         self.cancelled.append(generation)
@@ -142,6 +148,17 @@ class DriverCancelTests(unittest.TestCase):
             self.driver.cancel()
             time.sleep(0.15)
         self.assertEqual(self.driver._player.fed, [])
+
+    def test_changing_the_voice_does_not_wait_for_the_engine(self):
+        self.addCleanup(self.engine.voice_release.set)
+        self.driver._availableVoices = {"test": None, "other": None}
+        started = time.perf_counter()
+        self.driver._set_voice("other")
+        self.assertLess(time.perf_counter() - started, 0.5, "the settings ring froze until the helper answered")
+        self.assertEqual(self.driver._get_voice(), "other")
+        self.assertTrue(self.engine.voice_requested.wait(5), "the engine was never told to warm the voice up")
+        with self.assertRaises(KeyError):
+            self.driver._set_voice("missing")
 
 
 if __name__ == "__main__":
