@@ -3,6 +3,7 @@ import os
 import re
 import shutil
 import tempfile
+import threading
 import zipfile
 from collections import OrderedDict
 from dataclasses import dataclass
@@ -18,6 +19,7 @@ VOICE_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
 AUDIO_EXTENSIONS = (".wav", ".mp3", ".flac", ".ogg", ".m4a", ".aac")
 CONDITIONING_EXTENSIONS = (".pth",)
 PROFILE_FILE_NAME = "profile.json"
+_publication_lock = threading.RLock()
 
 
 class VoiceStoreError(RuntimeError):
@@ -198,17 +200,33 @@ def _make_temp_path(suffix):
 	return path
 
 
-def _copy_tree_atomic(source_dir, target_dir):
+def _copy_tree_atomic(source_dir, target_dir, overwrite=False):
 	temp_parent = get_temp_dir(create=True)
 	staging_dir = tempfile.mkdtemp(dir=temp_parent)
+	keep_backup = False
 	try:
 		payload_root = os.path.join(staging_dir, "payload")
 		shutil.copytree(source_dir, payload_root)
-		if os.path.isdir(target_dir):
-			shutil.rmtree(target_dir)
-		os.replace(payload_root, target_dir)
+		# Serialize this process's writers through the existence check and rollback.
+		with _publication_lock:
+			backup = os.path.join(staging_dir, "previous")
+			if os.path.lexists(target_dir):
+				if not overwrite or not os.path.isdir(target_dir):
+					raise DuplicateVoiceError("Voice already installed: %s" % os.path.basename(target_dir))
+				os.replace(target_dir, backup)
+			try:
+				os.replace(payload_root, target_dir)
+			except BaseException:
+				if os.path.isdir(backup):
+					try:
+						os.replace(backup, target_dir)
+					except OSError as error:
+						keep_backup = True
+						raise VoiceStoreError("Voice replacement failed and restoration was blocked. Previous voice retained at: %s" % backup) from error
+				raise
 	finally:
-		shutil.rmtree(staging_dir, ignore_errors=True)
+		if not keep_backup:
+			shutil.rmtree(staging_dir, ignore_errors=True)
 
 
 def _is_safe_archive_member(base_dir, member_name):
@@ -325,31 +343,30 @@ def install_voice_files(source_path, source_type, overwrite=False, install_note=
 		extra_metadata=extra_metadata,
 		validate_conditioning=validate_conditioning,
 	)
-	voice_id = metadata["voiceId"]
-	target_dir = get_user_voice_profile_dir(voice_id)
-	if os.path.isdir(target_dir) and not overwrite:
+	try:
+		voice_id = metadata["voiceId"]
+		target_dir = get_user_voice_profile_dir(voice_id)
+		os.makedirs(os.path.dirname(target_dir), exist_ok=True)
+		with _publication_lock:
+			_copy_tree_atomic(profile_dir, target_dir, overwrite=overwrite)
+			return [_build_voice_record(target_dir, "user", get_user_voice_dir(create=True))]
+	finally:
 		shutil.rmtree(cleanup_root, ignore_errors=True)
-		raise DuplicateVoiceError("Voice already installed: %s" % voice_id)
-	os.makedirs(os.path.dirname(target_dir), exist_ok=True)
-	_copy_tree_atomic(profile_dir, target_dir)
-	shutil.rmtree(cleanup_root, ignore_errors=True)
-	return [
-		_build_voice_record(target_dir, "user", get_user_voice_dir(create=True))
-	]
 
 
 def remove_user_voice(voice_id):
 	voice_id = _normalize_voice_id(voice_id)
 	target_dir = get_user_voice_profile_dir(voice_id)
-	if not os.path.isdir(target_dir):
-		raise VoiceStoreError("User voice not found: %s" % voice_id)
-	removed = []
-	for root, __, files in os.walk(target_dir):
-		for filename in files:
-			removed.append(os.path.join(root, filename))
-	shutil.rmtree(target_dir)
-	removed.append(target_dir)
-	return removed
+	with _publication_lock:
+		if not os.path.isdir(target_dir):
+			raise VoiceStoreError("User voice not found: %s" % voice_id)
+		removed = []
+		for root, __, files in os.walk(target_dir):
+			for filename in files:
+				removed.append(os.path.join(root, filename))
+		shutil.rmtree(target_dir)
+		removed.append(target_dir)
+		return removed
 
 
 def resolve_preview_reference_paths(source_path):

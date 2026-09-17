@@ -272,6 +272,9 @@ class HelperEngineClient(object):
 			"language": language,
 			"generation": generation,
 		}
+		yield from self._stream_request(payload)
+
+	def _stream_request(self, payload):
 		with self._io_lock:
 			self._ensure_running_locked()
 			self._request_id += 1
@@ -321,6 +324,13 @@ class HelperEngineClient(object):
 					self._request_active = False
 					self._request_started_at = None
 					self._request_interrupted = False
+
+	def stream_synthesize_preview_to_int16(self, text, conditioning_path, language="en-us", cache_key=None, synthesis_settings=None):
+		yield from self._stream_request({
+			"op": "synthesize_preview_stream", "text": text,
+			"conditioning_path": conditioning_path, "language": language,
+			"cache_key": cache_key, "synthesis_settings": synthesis_settings,
+		})
 
 	def synthesize_preview_to_int16(self, text, voice_path, speed=1.0, volume=1.0, language="en-us", cache_key=None):
 		response = self._request(

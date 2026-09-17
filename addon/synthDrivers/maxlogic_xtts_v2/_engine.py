@@ -386,6 +386,15 @@ class XTTSV2Engine(object):
 				import shutil
 				shutil.rmtree(cleanup_root, ignore_errors=True)
 
+	def stream_synthesize_preview_to_int16(self, text, conditioning_path, language="en-us", cache_key=None, synthesis_settings=None):
+		if not conditioning_path or not os.path.isfile(conditioning_path):
+			raise VoiceStoreError("The draft conditioning file is unavailable.")
+		yield from self._stream_synthesize_from_references(
+			text, [], conditioning_path=conditioning_path,
+			cache_key=cache_key or self._build_voice_cache_key([], conditioning_path),
+			language=language, synthesis_settings=synthesis_settings,
+		)
+
 	def supports_streaming(self):
 		preference = os.environ.get("MAXLOGIC_XTTS_V2_STREAMING", "auto").strip().lower()
 		if preference in ("0", "false", "no", "off"):

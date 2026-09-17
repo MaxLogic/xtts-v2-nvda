@@ -316,6 +316,20 @@ def main():
 					)
 					_send({"ok": True, "id": request_id, "type": "done", "chunks": chunk_count, "elapsedMs": elapsed_ms})
 					continue
+				if op == "synthesize_preview_stream":
+					if engine is None:
+						raise RuntimeError("Preview synthesis is unavailable in cache-only helper mode")
+					chunks = 0
+					for audio in engine.stream_synthesize_preview_to_int16(
+						request["text"], conditioning_path=request["conditioning_path"],
+						language=request.get("language", "en-us"), cache_key=request.get("cache_key"),
+						synthesis_settings=request.get("synthesis_settings"),
+					):
+						chunks += 1
+						_send({"ok": True, "id": request_id, "type": "audio_chunk", "audio_b64": base64.b64encode(audio.tobytes()).decode("ascii")})
+					_send({"ok": True, "id": request_id, "type": "done", "chunks": chunks})
+					continue
+
 				if op == "synthesize_preview":
 					if engine is None:
 						raise RuntimeError("Preview synthesis is unavailable in cache-only helper mode")

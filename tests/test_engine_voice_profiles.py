@@ -60,11 +60,17 @@ class EngineProfileTests(unittest.TestCase):
         settings = dict(temperature=.65, top_p=.8, top_k=50, repetition_penalty=2, speed=1.2)
         engine._synthesize_from_references("test", [], speed=1.1, synthesis_settings=settings)
         list(engine._stream_synthesize_from_references("test", [], speed=1.1, synthesis_settings=settings))
-        self.assertEqual(len(calls), 2)
-        for call in calls:
+        with tempfile.TemporaryDirectory(dir=ROOT / "tests") as directory:
+            conditioning = Path(directory) / "draft.pth"
+            conditioning.write_bytes(b"fixture")
+            list(engine.stream_synthesize_preview_to_int16("custom preview", str(conditioning), cache_key="draft-test", synthesis_settings=settings))
+        self.assertEqual(len(calls), 3)
+        for call in calls[:2]:
             for key in ("temperature", "top_p", "top_k", "repetition_penalty"):
                 self.assertEqual(call[key], settings[key])
             self.assertAlmostEqual(call["speed"], 1.32)
+        self.assertEqual(calls[2]["temperature"], .65)
+        self.assertEqual(calls[2]["speed"], 1.2)
         self.assertEqual(settings["speed"], 1.2)
 
     def test_cache_identity_changes_with_generation_settings(self):
