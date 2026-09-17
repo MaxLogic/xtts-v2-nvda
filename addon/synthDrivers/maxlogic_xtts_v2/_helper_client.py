@@ -27,6 +27,8 @@ class HelperEngineClient(object):
 		self.helper_mode = helper_mode
 		self._request_id = 0
 		self._io_lock = threading.RLock()
+		# cancel() writes while another thread holds _io_lock to read a response.
+		self._write_lock = threading.Lock()
 		self._state_lock = threading.Lock()
 		self._voice = None
 		self._voices = []
@@ -176,6 +178,11 @@ class HelperEngineClient(object):
 			except Exception:
 				self.logger.warning("Ignored non-JSON helper stdout line: %r", line[:200])
 
+	def _send_line(self, process, payload):
+		with self._write_lock:
+			process.stdin.write(json.dumps(payload) + "\n")
+			process.stdin.flush()
+
 	def _request(self, payload):
 		with self._io_lock:
 			self._ensure_running_locked()
@@ -188,8 +195,7 @@ class HelperEngineClient(object):
 				self._request_started_at = start_time
 				self._request_interrupted = False
 			try:
-				self._process.stdin.write(json.dumps(payload) + "\n")
-				self._process.stdin.flush()
+				self._send_line(self._process, payload)
 				response = self._read_message()
 				if not response.get("ok"):
 					self.logger.warning("XTTS helper request failed. op=%s error=%s", payload.get("op"), response.get("error"))
@@ -259,6 +265,17 @@ class HelperEngineClient(object):
 		)
 		return memoryview(base64.b64decode(response["audio_b64"]))
 
+	def cancel(self, generation):
+		"""Tell the helper to drop speech up to this generation. Never waits for synthesis."""
+		process = self._process
+		if process is None or process.poll() is not None:
+			return False
+		try:
+			self._send_line(process, {"op": "cancel", "generation": generation})
+		except Exception:
+			return False
+		return True
+
 	def stream_synthesize_to_int16(self, text, speed=1.0, voice=None, volume=1.0, language="en-us", generation=None):
 		if not self._streaming:
 			yield self.synthesize_to_int16(text, speed=speed, voice=voice, volume=volume, language=language, generation=generation)
@@ -287,8 +304,7 @@ class HelperEngineClient(object):
 				self._request_interrupted = False
 			chunks = 0
 			try:
-				self._process.stdin.write(json.dumps(payload) + "\n")
-				self._process.stdin.flush()
+				self._send_line(self._process, payload)
 				while True:
 					response = self._read_message()
 					if response.get("id") != payload["id"]:

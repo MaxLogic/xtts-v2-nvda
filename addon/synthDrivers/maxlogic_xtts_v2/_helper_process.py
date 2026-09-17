@@ -2,7 +2,9 @@ import base64
 import json
 import logging
 import os
+import queue
 import sys
+import threading
 import time
 import traceback
 
@@ -63,6 +65,53 @@ def _send_audio_chunk(request_id, audio_bytes, index, final=False):
 	)
 
 
+class _CancelState(object):
+	"""Generations the client has cancelled. Written by the stdin reader thread."""
+	def __init__(self):
+		self._lock = threading.Lock()
+		self._cancelled_upto = None
+		self._all = False
+
+	def cancel_upto(self, generation):
+		with self._lock:
+			if self._cancelled_upto is None or generation > self._cancelled_upto:
+				self._cancelled_upto = generation
+
+	def cancel_all(self):
+		with self._lock:
+			self._all = True
+
+	def is_cancelled(self, generation):
+		with self._lock:
+			if self._all:
+				return True
+			return generation is not None and self._cancelled_upto is not None and generation <= self._cancelled_upto
+
+
+def _read_requests(stream, requests, cancel_state):
+	"""Queue request lines for the main loop, but apply cancellation at once.
+
+	The main loop is busy during synthesis, so it would only see a cancel
+	request after generating audio that nobody wants any more.
+	"""
+	try:
+		for line in stream:
+			if '"cancel"' in line:
+				try:
+					request = json.loads(line)
+				except ValueError:
+					request = None
+				if isinstance(request, dict) and request.get("op") == "cancel":
+					if isinstance(request.get("generation"), int):
+						cancel_state.cancel_upto(request["generation"])
+					continue
+			requests.put(line)
+	finally:
+		# The client is gone: stop any running synthesis and let the main loop exit.
+		cancel_state.cancel_all()
+		requests.put(None)
+
+
 def _prewarm_engine(engine):
 	if engine.current_voice is None:
 		return
@@ -95,6 +144,10 @@ def main():
 	LOGGER.info("Helper starting. pid=%s packageRoot=%s logPath=%s mode=%s", os.getpid(), PACKAGE_ROOT, HELPER_LOG_PATH, HELPER_MODE)
 	speech_cache = None
 	engine = None
+	# Drain stdin from the start, so the client never blocks on a full pipe while the model loads.
+	requests = queue.Queue()
+	cancel_state = _CancelState()
+	threading.Thread(target=_read_requests, args=(sys.stdin, requests, cancel_state), name="HelperStdin", daemon=True).start()
 	try:
 		if HELPER_MODE != "cache":
 			from _engine import XTTSV2Engine
@@ -136,7 +189,10 @@ def main():
 		return 1
 
 	try:
-		for line in sys.stdin:
+		while True:
+			line = requests.get()
+			if line is None:
+				break
 			line = line.strip()
 			if not line:
 				continue
@@ -237,6 +293,9 @@ def main():
 					speed = request.get("speed", 1.0)
 					volume = request.get("volume", 1.0)
 					generation = request.get("generation")
+					if cancel_state.is_cancelled(generation):
+						_send({"ok": True, "id": request_id, "cancelled": True, "audio_b64": ""})
+						continue
 					cache_voice = engine.get_voice_cache_key(voice or engine.current_voice)
 					audio_bytes, cache_state = _get_cached_audio(speech_cache, hot_text_cache, cache_voice, speed, volume, language, text)
 					if audio_bytes is None:
@@ -273,10 +332,14 @@ def main():
 					speed = request.get("speed", 1.0)
 					volume = request.get("volume", 1.0)
 					generation = request.get("generation")
+					if cancel_state.is_cancelled(generation):
+						_send({"ok": True, "id": request_id, "type": "done", "chunks": 0, "cancelled": True})
+						continue
 					cache_voice = engine.get_voice_cache_key(voice or engine.current_voice)
 					audio_bytes, cache_state = _get_cached_audio(speech_cache, hot_text_cache, cache_voice, speed, volume, language, text)
 					chunk_count = 0
 					first_chunk_ms = None
+					cancelled = False
 					if audio_bytes is not None:
 						chunk_count = 1
 						first_chunk_ms = round((time.perf_counter() - start_time) * 1000, 1)
@@ -290,6 +353,9 @@ def main():
 							volume=volume,
 							language=language,
 						):
+							if cancel_state.is_cancelled(generation):
+								cancelled = True
+								break
 							audio_chunk = audio.tobytes()
 							if not audio_chunk:
 								continue
@@ -298,8 +364,12 @@ def main():
 							if first_chunk_ms is None:
 								first_chunk_ms = round((time.perf_counter() - start_time) * 1000, 1)
 							_send_audio_chunk(request_id, audio_chunk, chunk_count)
-						audio_bytes = bytes(full_audio)
-						_store_cached_audio(speech_cache, hot_text_cache, cache_voice, speed, volume, language, text, audio_bytes)
+						if cancelled:
+							# Partial audio must not be cached as the whole utterance.
+							cache_state = "cancelled"
+						else:
+							audio_bytes = bytes(full_audio)
+							_store_cached_audio(speech_cache, hot_text_cache, cache_voice, speed, volume, language, text, audio_bytes)
 					elapsed_ms = round((time.perf_counter() - start_time) * 1000, 1)
 					LOGGER.info(
 						"Helper synthesize stream complete. chars=%s voice=%s lang=%s speed=%s volume=%s cache=%s chunks=%s firstChunkMs=%s elapsedMs=%s generation=%s",
@@ -314,7 +384,7 @@ def main():
 						elapsed_ms,
 						generation,
 					)
-					_send({"ok": True, "id": request_id, "type": "done", "chunks": chunk_count, "elapsedMs": elapsed_ms})
+					_send({"ok": True, "id": request_id, "type": "done", "chunks": chunk_count, "elapsedMs": elapsed_ms, "cancelled": cancelled})
 					continue
 				if op == "synthesize_preview_stream":
 					if engine is None:
