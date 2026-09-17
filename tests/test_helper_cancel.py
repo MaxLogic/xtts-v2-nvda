@@ -114,6 +114,12 @@ class HelperCancelTests(unittest.TestCase):
         chunks = list(self.client.stream_synthesize_to_int16("Fresh text.", voice="test", generation=4))
         self.assertEqual(len(chunks), 200)
 
+    def test_a_closed_client_does_not_start_another_helper(self):
+        self.client.close()
+        with self.assertRaises(RuntimeError):
+            self.client.get_cache_stats()
+        self.assertIsNone(self.client._process)
+
 
 if __name__ == "__main__":
     unittest.main()

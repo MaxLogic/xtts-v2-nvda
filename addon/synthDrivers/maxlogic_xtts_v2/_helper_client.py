@@ -41,6 +41,7 @@ class HelperEngineClient(object):
 		self._request_started_at = None
 		self._request_interrupted = False
 		self._skip_next_prewarm = bool(skip_prewarm)
+		self._closed = False
 		self._start(skip_prewarm=bool(skip_prewarm))
 
 	@classmethod
@@ -138,11 +139,11 @@ class HelperEngineClient(object):
 					return
 				last_error = RuntimeError(ready.get("error", "helper start failed"))
 				self.logger.warning("MaxLogic XTTS v2 helper start failed for command %s: %s", command, last_error)
-				self.close()
+				self._stop_process()
 			except Exception as error:
 				last_error = error
 				self.logger.warning("MaxLogic XTTS v2 helper launch failed for command %s: %s", command, error)
-				self.close()
+				self._stop_process()
 		raise RuntimeError("Unable to start MaxLogic XTTS v2 helper: %s" % last_error)
 
 	def _consume_skip_prewarm_locked(self):
@@ -152,6 +153,9 @@ class HelperEngineClient(object):
 			return value
 
 	def _ensure_running_locked(self):
+		if self._closed:
+			# A thread that was still queued when the owner closed us must not start an orphan.
+			raise RuntimeError("MaxLogic XTTS v2 helper client is closed")
 		if self._process is not None and self._process.poll() is None:
 			return
 		self._process = None
@@ -391,6 +395,10 @@ class HelperEngineClient(object):
 		return [text]
 
 	def close(self):
+		self._closed = True
+		self._stop_process()
+
+	def _stop_process(self):
 		with self._io_lock:
 			process = self._process
 			self._process = None
