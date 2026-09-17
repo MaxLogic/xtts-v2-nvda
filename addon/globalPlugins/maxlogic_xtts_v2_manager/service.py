@@ -57,6 +57,7 @@ _preview_player = None
 _preview_player_format = None
 _preview_helper = None
 _preview_helper_thread = None
+_preview_voices_stale = False
 _sample_text_cache = None
 _PREVIEW_WAV_CACHE_VERSION = 1
 _PREVIEW_WAV_CACHE_DIR_NAME = "preview-wav"
@@ -353,8 +354,17 @@ def close_preview_helper():
 
 
 def _invalidate_preview_helper(reason):
-	close_preview_helper()
-	log.info("MaxLogic XTTS v2 preview helper invalidated. reason=%s", reason)
+	# Loading the model takes tens of seconds. A changed voice store only needs a rescan.
+	global _preview_voices_stale
+	_preview_voices_stale = True
+	log.info("MaxLogic XTTS v2 preview helper voices marked stale. reason=%s", reason)
+
+
+def _consume_preview_voices_stale():
+	global _preview_voices_stale
+	with _preview_helper_lock:
+		stale, _preview_voices_stale = _preview_voices_stale, False
+	return stale
 
 
 def prepare_preview_runtime_async(on_complete=None):
@@ -1059,7 +1069,7 @@ def play_installed_voice_sample(record, on_complete=None, preview_language=None,
 						synthesis_settings=(record.metadata or {}).get("synthesisSettings"),
 					)
 				else:
-					if record.voice_id not in set(getattr(helper, "_voices", []) or []):
+					if _consume_preview_voices_stale() or record.voice_id not in set(getattr(helper, "_voices", []) or []):
 						helper.reload_voices(preferred_voice=record.voice_id)
 					chunks = helper.stream_synthesize_to_int16(text, voice=record.voice_id, language=language)
 				status = _play_preview_stream(chunks, helper.sample_rate, generation, cache_payload, started)
