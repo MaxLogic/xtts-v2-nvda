@@ -171,10 +171,18 @@ class SynthDriver(synthDriverHandler.SynthDriver):
 		super(SynthDriver, self).terminate()
 
 	def cancel(self):
+		cancelled_generation = self._generation
 		self._generation += 1
 		self._clear_pending_speech()
 		if self._player is not None:
 			self._player.stop()
+		# Otherwise the helper finishes the abandoned text before it starts the next utterance.
+		canceller = getattr(self._engine, "cancel", None)
+		if canceller is not None:
+			try:
+				canceller(cancelled_generation)
+			except Exception:
+				log.debug("MaxLogic XTTS v2 engine cancel failed", exc_info=True)
 
 	def _interrupt_engine(self, reason, min_active_ms=0):
 		if not hasattr(self._engine, "interrupt"):
@@ -300,7 +308,12 @@ class SynthDriver(synthDriverHandler.SynthDriver):
 				if isinstance(item, dict) and "error" in item:
 					raise RuntimeError(item["error"])
 				__, audio_bytes = item
-				self._player.feed(audio_bytes)
+				# cancel() may have run while this thread waited on the queue.
+				if generation != self._generation or self._terminated:
+					stop_event.set()
+					return
+				if audio_bytes:
+					self._player.feed(audio_bytes)
 		finally:
 			stop_event.set()
 		self._player.idle()
