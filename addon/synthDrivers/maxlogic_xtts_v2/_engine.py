@@ -282,9 +282,13 @@ class XTTSV2Engine(object):
 		import torch
 		options = validate_options(options)
 		trim = options.pop("trim_silence", False)
+		balance = options.pop("balance_style", False)
 		paths, cleanup_root = self._prepare_cloning_references(reference_paths, trim)
 		try:
-			gpt, speaker = self.tts.synthesizer.tts_model.get_conditioning_latents(audio_path=paths, **options)
+			if balance:
+				gpt, speaker = self._balanced_conditioning_latents(paths, **options)
+			else:
+				gpt, speaker = self.tts.synthesizer.tts_model.get_conditioning_latents(audio_path=paths, **options)
 			if not torch.isfinite(gpt).all() or not torch.isfinite(speaker).all():
 				raise VoiceStoreError("Reference recordings produced invalid conditioning. Check for silent or damaged audio.")
 			# This is a required profile artifact, not a best-effort cache write.
@@ -294,6 +298,43 @@ class XTTSV2Engine(object):
 		finally:
 			if cleanup_root:
 				shutil.rmtree(cleanup_root, ignore_errors=True)
+
+	def _balanced_conditioning_latents(self, paths, max_ref_length, gpt_cond_len, gpt_cond_chunk_len, sound_norm_refs):
+		"""Like XTTS get_conditioning_latents, but every recording shapes GPT style.
+
+		Stock XTTS joins the recordings and keeps only the first gpt_cond_len
+		seconds, so later recordings often add nothing to speaking style. Here
+		the budget is shared across recordings, taken from the middle of each.
+		Speaker identity is unchanged: the mean over each full (capped) recording.
+		"""
+		import torch
+		from TTS.tts.models.xtts import load_audio
+		try:
+			from ._reference_coverage import balanced_style_seconds, centered_window
+		except ImportError:
+			from _reference_coverage import balanced_style_seconds, centered_window
+		model = self.tts.synthesizer.tts_model
+		load_sr = 22050
+		audios = []
+		speaker_embeddings = []
+		for path in paths:
+			audio = load_audio(path, load_sr)[:, : load_sr * max_ref_length].to(model.device)
+			if sound_norm_refs:
+				audio = (audio / torch.abs(audio).max()) * 0.75
+			speaker_embeddings.append(model.get_speaker_embedding(audio, load_sr))
+			audios.append(audio)
+		shares = balanced_style_seconds([audio.shape[-1] / load_sr for audio in audios], max_ref_length, gpt_cond_len)
+		slices = []
+		for audio, share in zip(audios, shares):
+			start, end = centered_window(audio.shape[-1] / load_sr, share)
+			piece = audio[:, int(round(start * load_sr)):int(round(end * load_sr))]
+			if piece.shape[-1]:
+				slices.append(piece)
+		log.info("MaxLogic XTTS v2 balanced style conditioning. seconds=%s", ["%.2f" % share for share in shares])
+		# length=-1: the slices already respect the total budget.
+		gpt = model.get_gpt_cond_latents(torch.cat(slices, dim=-1), load_sr, length=-1, chunk_length=gpt_cond_chunk_len)
+		speaker = torch.stack(speaker_embeddings).mean(dim=0)
+		return gpt, speaker
 
 	def validate_conditioning_file(self, conditioning_path):
 		if not conditioning_path or not os.path.isfile(conditioning_path):
@@ -497,7 +538,8 @@ class XTTSV2Engine(object):
 		paths = [os.path.abspath(path) for path in (reference_paths or []) if path]
 		if conditioning_path:
 			paths.append(os.path.abspath(conditioning_path))
-		for path in sorted(paths):
+		# Keep list order: stock XTTS conditioning depends on reference order.
+		for path in paths:
 			digest.update(path.encode("utf-8", errors="replace"))
 			try:
 				stats = os.stat(path)

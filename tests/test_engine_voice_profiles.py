@@ -44,6 +44,29 @@ class EngineProfileTests(unittest.TestCase):
             finally:
                 shutil.rmtree(cleanup)
 
+    def test_balanced_style_takes_middle_of_every_recording(self):
+        import torch
+        from unittest.mock import patch
+        engine = self.Engine.__new__(self.Engine)
+        rate = 22050
+        # Each recording is a constant value so the GPT input shows its origin.
+        audio = {"a": torch.full((1, rate * 2), 1.0), "b": torch.full((1, rate * 100), 2.0), "c": torch.full((1, rate * 10), 3.0)}
+        seen = {}
+        def gpt_latents(mix, sr, length, chunk_length):
+            seen.update(mix=mix, length=length, chunk=chunk_length)
+            return torch.zeros(1, 4, 1)
+        model = types.SimpleNamespace(device="cpu", get_gpt_cond_latents=gpt_latents,
+            get_speaker_embedding=lambda clip, sr: torch.full((1, 3, 1), float(clip[0, 0])))
+        engine.tts = types.SimpleNamespace(synthesizer=types.SimpleNamespace(tts_model=model))
+        with patch("TTS.tts.models.xtts.load_audio", lambda path, sr: audio[path]):
+            gpt, speaker = engine._balanced_conditioning_latents(["a", "b", "c"], max_ref_length=30, gpt_cond_len=12, gpt_cond_chunk_len=6, sound_norm_refs=False)
+        mix = seen["mix"][0]
+        self.assertEqual(seen["length"], -1)
+        self.assertEqual(mix.shape[-1], rate * 12)
+        for value, seconds in ((1.0, 2), (2.0, 5), (3.0, 5)):
+            self.assertEqual(int((mix == value).sum()), rate * seconds)
+        self.assertTrue(torch.allclose(speaker, torch.full((1, 3, 1), 2.0)))
+
     def test_both_render_paths_receive_profile_generation_settings(self):
         engine = self.Engine.__new__(self.Engine)
         calls = []

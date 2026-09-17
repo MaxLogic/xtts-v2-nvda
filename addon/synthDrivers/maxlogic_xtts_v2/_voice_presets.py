@@ -1,14 +1,23 @@
-"""Explicit starting points, not measured voice-quality rankings."""
+"""Explicit starting points, not measured voice-quality rankings.
+
+The first entry of each tuple is the default. "model_config" mirrors the
+released XTTS v2 config.json, which Coqui's high-level synthesize() uses;
+"function_defaults" mirrors the bare get_conditioning_latents()/inference()
+keyword defaults.
+"""
 import math
 
+# (maximum seconds per recording, total conditioning seconds, chunk seconds)
 CONDITIONING_PRESETS = (
-	("default", (30, 6, 6)),
+	("model_config", (30, 30, 4)),
+	("function_defaults", (30, 6, 6)),
 	("extended", (30, 12, 6)),
 	("long", (30, 30, 6)),
 )
 
 GENERATION_PRESETS = (
-	("default", dict(temperature=0.75, top_p=0.85, top_k=50, repetition_penalty=10.0, speed=1.0)),
+	("model_config", dict(temperature=0.75, top_p=0.85, top_k=50, repetition_penalty=5.0, speed=1.0)),
+	("function_defaults", dict(temperature=0.75, top_p=0.85, top_k=50, repetition_penalty=10.0, speed=1.0)),
 	("suggested_mid", dict(temperature=0.75, top_p=0.85, top_k=50, repetition_penalty=2.0, speed=1.0)),
 	("suggested_low", dict(temperature=0.65, top_p=0.80, top_k=50, repetition_penalty=2.0, speed=1.0)),
 	("suggested_high", dict(temperature=0.85, top_p=0.90, top_k=50, repetition_penalty=2.0, speed=1.0)),

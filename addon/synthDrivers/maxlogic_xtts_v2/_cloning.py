@@ -24,6 +24,9 @@ def validate_options(options):
 	# Keep older profiles/settings valid; trimming is an opt-in preprocessing step.
 	if "trim_silence" in options:
 		result["trim_silence"] = False
+	# Absent in older profiles, which used stock XTTS list-order conditioning.
+	if "balance_style" in options:
+		result["balance_style"] = False
 	if set(options) - set(result):
 		raise VoiceStoreError("Unknown voice cloning setting")
 	result.update(options)
