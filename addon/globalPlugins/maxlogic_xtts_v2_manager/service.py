@@ -357,18 +357,22 @@ def _invalidate_preview_helper(reason):
 	log.info("MaxLogic XTTS v2 preview helper invalidated. reason=%s", reason)
 
 
-def prepare_preview_runtime_async():
+def prepare_preview_runtime_async(on_complete=None):
 	global _preview_helper_thread
 	def _worker():
 		global _preview_helper_thread
+		error_message = None
 		try:
-			_get_preview_helper(skip_prewarm=False)
+			# Loading the model is sufficient; do not generate an unrelated sample.
+			_get_preview_helper(skip_prewarm=True)
 		except Exception as error:
+			error_message = str(error)
 			log.warning("MaxLogic XTTS v2 preview warmup failed: %s", error)
-			close_preview_helper()
 		finally:
 			with _preview_helper_lock:
 				_preview_helper_thread = None
+			if on_complete is not None:
+				wx.CallAfter(on_complete, error_message)
 
 	# Another page can request warmup while helper startup owns this lock.
 	# Never make the NVDA GUI thread wait for the external process.

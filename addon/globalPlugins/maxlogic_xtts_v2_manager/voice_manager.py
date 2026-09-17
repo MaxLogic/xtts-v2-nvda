@@ -3069,6 +3069,8 @@ class MaxLogicVoiceManagerDialog(wx.Dialog):
 		self.loading_status = StatusText(self, label=_("Loading installed voices..."), name=_("Page status"))
 		main_sizer.Add(self.loading_status, 0, wx.EXPAND | wx.LEFT | wx.RIGHT, 10)
 		self._last_loading_message = None
+		self._runtime_message = None
+		self._closed = False
 		button_sizer = self.CreateButtonSizer(wx.CLOSE)
 		main_sizer.Add(button_sizer, 0, wx.EXPAND | wx.ALL, 10)
 		self.SetSizer(main_sizer)
@@ -3079,8 +3081,25 @@ class MaxLogicVoiceManagerDialog(wx.Dialog):
 		self.notebook.SetFocus()
 		self.CentreOnScreen()
 		self._log_active_page()
+		wx.CallAfter(self._prepare_runtime)
+
+	def _prepare_runtime(self):
+		if not self or self.IsBeingDeleted() or self._closed:
+			return
+		def complete(error):
+			if not self or self.IsBeingDeleted() or self._closed:
+				return
+			self._runtime_message = (_("XTTS background loading failed. Cloning or playback will retry.")
+				if error else _("XTTS is ready."))
+			self.refresh_loading_feedback()
+		if service.prepare_preview_runtime_async(on_complete=complete):
+			self._runtime_message = _("Loading XTTS in the background. You can choose recordings while it loads.")
+			self.refresh_loading_feedback()
 
 	def on_char_hook(self, event):
+		if event.GetKeyCode() == wx.WXK_F4 and event.GetModifiers() == wx.MOD_CONTROL:
+			self.Close()
+			return
 		if (self.notebook.GetCurrentPage() is self.installed_panel
 				and event.GetKeyCode() == ord("P")
 				and event.GetModifiers() == wx.MOD_CONTROL):
@@ -3102,7 +3121,7 @@ class MaxLogicVoiceManagerDialog(wx.Dialog):
 					if message:
 						return message
 			return None
-		message = pending(self.notebook.GetCurrentPage())
+		message = pending(self.notebook.GetCurrentPage()) or self._runtime_message
 		self.loading_status.SetLabel(message or _("Ready."))
 		if message != self._last_loading_message and self.IsShownOnScreen() and self.IsActive():
 			if message:
@@ -3155,18 +3174,52 @@ class MaxLogicVoiceManagerDialog(wx.Dialog):
 		if isinstance(page, DeferredPanel):
 			page.load()
 		self.refresh_loading_feedback()
+		self.fit_active_page()
 		self._log_active_page()
 		event.Skip()
 
+	def fit_active_page(self):
+		"""Fit the native cloning form without measuring unrelated notebook pages."""
+		if not self or self.IsBeingDeleted() or self.notebook.GetCurrentPage() is not self.clone_panel:
+			return
+		content = self.clone_panel.content
+		if not content:
+			return
+		content.InvalidateBestSize()
+		needed = content.GetSizer().CalcMin()
+		page_size = self.clone_panel.GetSize()
+		window_size = self.GetSize()
+		width = max(self.FromDIP(900), needed.width + window_size.width - page_size.width)
+		height = max(self.FromDIP(620), needed.height + window_size.height - page_size.height)
+		display_index = wx.Display.GetFromWindow(self)
+		area = wx.Display(display_index if display_index != wx.NOT_FOUND else 0).GetClientArea()
+		self.SetSize((min(width, area.width), min(height, area.height)))
+		position = self.GetPosition()
+		size = self.GetSize()
+		self.Move(max(area.x, min(position.x, area.GetRight() - size.width + 1)),
+			max(area.y, min(position.y, area.GetBottom() - size.height + 1)))
+		self.Layout()
+		self.clone_panel.Layout()
+		content.Layout()
+
 	def on_close(self, event):
+		if (getattr(self, "_operation_busy", False) or self.installed_panel._setup_busy is not None) and event.CanVeto():
+			event.Veto()
+			ui.message(_("Wait for the operation to finish before closing."))
+			return
 		extract = self.extract_panel.content
 		if extract and (extract._busy or extract._save_busy is not None) and event.CanVeto():
 			event.Veto()
 			ui.message(_("Wait for the audio operation to finish before closing."))
 			return
 		service.stop_preview()
+		if self.clone_panel.content:
+			self.clone_panel.content.cleanup()
 		try:
 			self.extract_panel.content.cleanup() if self.extract_panel.content else None
 		except Exception:
 			pass
-		event.Skip()
+		self._closed = True
+		# The default wx close handler dispatches our escape button, whose
+		# handler calls Close again. End the modal explicitly after cleanup.
+		self.EndModal(wx.ID_CLOSE)

@@ -27,7 +27,7 @@ class PreviewStartupTests(unittest.TestCase):
             "nvwave": types.SimpleNamespace(),
             "synthDriverHandler": types.SimpleNamespace(getSynth=lambda: None),
             "logHandler": types.SimpleNamespace(log=logging.getLogger("test")),
-            "wx": types.SimpleNamespace(),
+            "wx": types.SimpleNamespace(CallAfter=lambda callback, *args: callback(*args)),
         }
         with patch.dict(sys.modules, boundary), patch.object(builtins, "_", lambda s: s, create=True):
             spec = importlib.util.spec_from_file_location(
@@ -37,8 +37,11 @@ class PreviewStartupTests(unittest.TestCase):
             spec.loader.exec_module(service)
             entered, release, returned = threading.Event(), threading.Event(), threading.Event()
             helpers = []
+            completed = []
+            startup_options = []
 
             def slow_helper(*args, **kwargs):
+                startup_options.append(kwargs)
                 entered.set()
                 if not release.wait(5):
                     raise RuntimeError("test did not release helper")
@@ -51,7 +54,7 @@ class PreviewStartupTests(unittest.TestCase):
                 returned.set()
 
             with patch.object(service, "HelperEngineClient", slow_helper):
-                self.assertTrue(service.prepare_preview_runtime_async())
+                self.assertTrue(service.prepare_preview_runtime_async(on_complete=completed.append))
                 worker = service._preview_helper_thread
                 self.assertTrue(entered.wait(2))
                 caller = threading.Thread(target=another_page, daemon=True)
@@ -62,8 +65,11 @@ class PreviewStartupTests(unittest.TestCase):
                     release.set()
                     caller.join(2)
                     worker.join(2)
+                    self.assertFalse(service.prepare_preview_runtime_async())
                     service.close_preview_helper()
                 self.assertEqual(len(helpers), 1)
+                self.assertEqual(completed, [None])
+                self.assertTrue(startup_options[0]["skip_prewarm"])
 
 
 if __name__ == "__main__":
