@@ -88,6 +88,45 @@ class _CancelState(object):
 			return generation is not None and self._cancelled_upto is not None and generation <= self._cancelled_upto
 
 
+def _pipe_lines(stream, poll_seconds=0.01):
+	"""Yield the lines written to a pipe without ever waiting inside ReadFile.
+
+	On Windows, a thread blocked in ReadFile on stdin can stop other threads
+	from loading DLLs. The helper then hung while importing numpy until the
+	client closed the pipe. Asking how many bytes are waiting avoids that.
+	"""
+	if os.name != "nt":
+		yield from stream
+		return
+	import ctypes
+	import msvcrt
+	from ctypes import wintypes
+	kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+	peek = kernel32.PeekNamedPipe
+	peek.argtypes = [wintypes.HANDLE, ctypes.c_void_p, wintypes.DWORD, ctypes.c_void_p, ctypes.POINTER(wintypes.DWORD), ctypes.c_void_p]
+	peek.restype = wintypes.BOOL
+	fd = stream.fileno()
+	handle = msvcrt.get_osfhandle(fd)
+	available = wintypes.DWORD()
+	if not peek(handle, None, 0, None, ctypes.byref(available), None):
+		# Not a pipe, for example a file: reads do not block there.
+		yield from stream
+		return
+	pending = b""
+	while True:
+		if not peek(handle, None, 0, None, ctypes.byref(available), None):
+			break  # The client closed its end.
+		if not available.value:
+			time.sleep(poll_seconds)
+			continue
+		pending += os.read(fd, available.value)
+		*lines, pending = pending.split(b"\n")
+		for line in lines:
+			yield line.decode("utf-8", "replace") + "\n"
+	if pending:
+		yield pending.decode("utf-8", "replace")
+
+
 def _read_requests(stream, requests, cancel_state):
 	"""Queue request lines for the main loop, but apply cancellation at once.
 
@@ -95,7 +134,7 @@ def _read_requests(stream, requests, cancel_state):
 	request after generating audio that nobody wants any more.
 	"""
 	try:
-		for line in stream:
+		for line in _pipe_lines(stream):
 			if '"cancel"' in line:
 				try:
 					request = json.loads(line)
