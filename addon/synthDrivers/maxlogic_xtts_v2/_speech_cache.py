@@ -1,3 +1,5 @@
+# Shared with kokoro-tts-nvda. Source of truth: xtts-v2-nvda/addon/synthDrivers/maxlogic_xtts_v2/_speech_cache.py.
+# Change it there first, then copy it to kokoro. Only product names may differ.
 import hashlib
 import json
 import os

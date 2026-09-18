@@ -65,6 +65,8 @@ def _send_audio_chunk(request_id, audio_bytes, index, final=False):
 	)
 
 
+# Shared with kokoro-tts-nvda down to _read_requests. Source of truth: xtts-v2-nvda/addon/synthDrivers/maxlogic_xtts_v2/_helper_process.py.
+# Change it there first, then copy it to kokoro.
 class _CancelState(object):
 	"""Generations the client has cancelled. Written by the stdin reader thread."""
 	def __init__(self):
