@@ -21,7 +21,7 @@ class HelperRequestInterrupted(RuntimeError):
 class HelperEngineClient(object):
 	sample_rate = 24000
 
-	def __init__(self, package_root, logger, helper_mode="synth", skip_prewarm=False):
+	def __init__(self, package_root, logger, helper_mode="synth", skip_prewarm=False, wait_until_ready=True):
 		self.package_root = package_root
 		self.logger = logger
 		self.helper_mode = helper_mode
@@ -42,7 +42,24 @@ class HelperEngineClient(object):
 		self._request_interrupted = False
 		self._skip_next_prewarm = bool(skip_prewarm)
 		self._closed = False
-		self._start(skip_prewarm=bool(skip_prewarm))
+		self._ready = threading.Event()
+		if wait_until_ready:
+			self._start(skip_prewarm=bool(skip_prewarm))
+		else:
+			# Loading the model takes up to a minute. Requests wait for it; the caller does not.
+			threading.Thread(target=self._start_in_background, args=(bool(skip_prewarm),),
+				name="MaxLogicXTTSV2HelperStart", daemon=True).start()
+
+	def _start_in_background(self, skip_prewarm):
+		try:
+			self._start(skip_prewarm=skip_prewarm)
+		except Exception as error:
+			if not self._closed:
+				self.logger.warning("MaxLogic XTTS v2 helper failed to start: %s", error)
+
+	@property
+	def is_ready(self):
+		return self._ready.is_set()
 
 	@classmethod
 	def should_try(cls, package_root):
@@ -105,6 +122,8 @@ class HelperEngineClient(object):
 	def _start_locked(self, skip_prewarm=False):
 		last_error = None
 		for command in self._candidate_commands(self.package_root):
+			if self._closed:
+				raise RuntimeError("MaxLogic XTTS v2 helper client is closed")
 			try:
 				self.logger.info("Starting MaxLogic XTTS v2 helper with command %s", command)
 				self._process = subprocess.Popen(
@@ -136,6 +155,7 @@ class HelperEngineClient(object):
 						self._streaming,
 						get_helper_log_path(),
 					)
+					self._ready.set()
 					return
 				last_error = RuntimeError(ready.get("error", "helper start failed"))
 				self.logger.warning("MaxLogic XTTS v2 helper start failed for command %s: %s", command, last_error)
@@ -396,6 +416,13 @@ class HelperEngineClient(object):
 
 	def close(self):
 		self._closed = True
+		process = self._process
+		if process is not None and not self._ready.is_set():
+			# Still loading, and the start holds _io_lock until the model is ready. End it now.
+			try:
+				process.kill()
+			except Exception:
+				pass
 		self._stop_process()
 
 	def _stop_process(self):

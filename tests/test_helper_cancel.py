@@ -19,6 +19,7 @@ SYNTH_ROOT = Path(__file__).resolve().parents[1] / "addon/synthDrivers/maxlogic_
 HELPER_FILES = ("_helper_process.py", "_hot_text_cache.py", "_log.py", "_speech_cache.py", "_cache_settings.py", "_paths.py")
 
 FAKE_ENGINE = r'''
+import os
 import time
 
 
@@ -35,7 +36,8 @@ class XTTSV2Engine(object):
     current_voice = "test"
 
     def __init__(self, package_root):
-        pass
+        # Stands in for loading the model.
+        time.sleep(float(os.environ.get("FAKE_ENGINE_LOAD_SECONDS", "0")))
 
     def list_voices(self):
         return ["test"]
@@ -119,6 +121,57 @@ class HelperCancelTests(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             self.client.get_cache_stats()
         self.assertIsNone(self.client._process)
+
+
+
+class HelperBackgroundStartTests(unittest.TestCase):
+    """Selecting the synthesizer must not wait for the model to load."""
+    LOAD_SECONDS = 1.5
+
+    def setUp(self):
+        self._root = tempfile.TemporaryDirectory(prefix="xtts-start-test-", ignore_cleanup_errors=True)
+        self.addCleanup(self._root.cleanup)
+        self.package_root = os.path.join(self._root.name, "package")
+        os.mkdir(self.package_root)
+        for name in HELPER_FILES:
+            shutil.copyfile(SYNTH_ROOT / name, os.path.join(self.package_root, name))
+        with open(os.path.join(self.package_root, "_engine.py"), "w", encoding="utf-8") as handle:
+            handle.write(FAKE_ENGINE)
+        patcher = patch.dict(os.environ, {
+            "APPDATA": os.path.join(self._root.name, "appdata"),
+            "MAXLOGIC_XTTS_V2_HELPER_PYTHON": sys.executable,
+            "FAKE_ENGINE_LOAD_SECONDS": str(self.LOAD_SECONDS),
+        })
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        sys.path.insert(0, str(SYNTH_ROOT))
+        self.addCleanup(sys.path.remove, str(SYNTH_ROOT))
+        from _helper_client import HelperEngineClient
+        self.client_class = HelperEngineClient
+
+    def test_the_client_returns_before_the_helper_is_ready(self):
+        started = time.perf_counter()
+        client = self.client_class(self.package_root, logging.getLogger("test"), skip_prewarm=True, wait_until_ready=False)
+        self.addCleanup(client.close)
+        self.assertLess(time.perf_counter() - started, 0.5, "the caller waited for the model to load")
+        self.assertFalse(client.is_ready)
+        # A request waits for the helper instead of failing.
+        self.assertEqual(len(client.synthesize_to_int16("Early text.", voice="test")), 16)
+        self.assertTrue(client.is_ready)
+
+    def test_closing_during_startup_does_not_wait_or_leave_a_helper(self):
+        client = self.client_class(self.package_root, logging.getLogger("test"), skip_prewarm=True, wait_until_ready=False)
+        deadline = time.perf_counter() + 2
+        while client._process is None and time.perf_counter() < deadline:
+            time.sleep(0.01)
+        process = client._process
+        self.assertIsNotNone(process, "the helper never started")
+        started = time.perf_counter()
+        client.close()
+        self.assertLess(time.perf_counter() - started, 0.5, "close() waited for the model to load")
+        self.assertIsNotNone(process.wait(timeout=2), "the helper kept running after close()")
+        time.sleep(self.LOAD_SECONDS)
+        self.assertIsNone(client._process, "a closed client started another helper")
 
 
 if __name__ == "__main__":
