@@ -85,8 +85,16 @@ class SynthDriver(synthDriverHandler.SynthDriver):
 		self._terminated = False
 		self._player = None
 		self._voice_warm_lock = threading.Lock()
+		# Utterances NVDA has sent whose "end" event the feed thread has not yet seen.
+		self._unfinished = 0
+		self._unfinished_lock = threading.Lock()
+		self._speaking = False
+		self._fed_since_sync = False
+		self._events = queue.Queue(maxsize=self.prefetchQueueSize * 2)
 		self._worker = threading.Thread(target=self._speech_worker, name="MaxLogicXTTSV2Speech", daemon=True)
 		self._worker.start()
+		self._feeder = threading.Thread(target=self._feed_worker, name="MaxLogicXTTSV2Feed", daemon=True)
+		self._feeder.start()
 
 	def _create_engine(self):
 		if HelperEngineClient is not None and HelperEngineClient.should_try(PACKAGE_ROOT):
@@ -164,8 +172,9 @@ class SynthDriver(synthDriverHandler.SynthDriver):
 		self.cancel()
 		self._interrupt_engine(reason="terminate", min_active_ms=0)
 		self._queue.put(None)
-		if self._worker.is_alive():
-			self._worker.join(timeout=1.0)
+		for thread in (self._worker, self._feeder):
+			if thread.is_alive():
+				thread.join(timeout=1.0)
 		if self._player is not None:
 			self._player.close()
 			self._player = None
@@ -176,6 +185,8 @@ class SynthDriver(synthDriverHandler.SynthDriver):
 	def cancel(self):
 		cancelled_generation = self._generation
 		self._generation += 1
+		# Cancelled speech is never reported as done.
+		self._speaking = False
 		self._clear_pending_speech()
 		if self._player is not None:
 			self._player.stop()
@@ -202,6 +213,9 @@ class SynthDriver(synthDriverHandler.SynthDriver):
 				self._queue.get_nowait()
 			except queue.Empty:
 				break
+			# This utterance will never reach the feed thread.
+			with self._unfinished_lock:
+				self._unfinished -= 1
 
 	def pause(self, switch):
 		if self._player is not None and hasattr(self._player, "pause"):
@@ -210,7 +224,11 @@ class SynthDriver(synthDriverHandler.SynthDriver):
 	def speak(self, speechSequence):
 		# NVDA calls cancel() itself before speech that interrupts. Queuing lets say-all
 		# send the next sentence while this one is still playing.
-		self._queue.put((self._generation, self._sequence_to_tasks(speechSequence)))
+		tasks = self._sequence_to_tasks(speechSequence)
+		with self._unfinished_lock:
+			self._unfinished += 1
+		self._speaking = True
+		self._queue.put((self._generation, tasks))
 
 	def _sequence_to_tasks(self, speechSequence):
 		tasks = []
@@ -259,106 +277,121 @@ class SynthDriver(synthDriverHandler.SynthDriver):
 		return tasks
 
 	def _speech_worker(self):
+		"""Synthesize NVDA's utterances in order, ahead of playback."""
 		while True:
 			item = self._queue.get()
 			if item is None:
+				self._put_event(None)
 				return
 			generation, tasks = item
 			try:
-				played = self._play_utterance(tasks, generation)
-				self._finish_when_played(played, generation)
+				if generation == self._generation and not self._terminated:
+					self._produce_utterance(tasks, generation)
 			except Exception:
 				log.exception("MaxLogic XTTS v2 speech worker failed", exc_info=True)
+			finally:
+				# Every utterance taken from the queue ends with this, even a cancelled one.
+				self._put_event(("end", generation))
 
-	def _finish_when_played(self, played, generation):
-		# More speech plays straight after this one, so only the last utterance waits for its audio.
-		while played is not None and not played.wait(0.02):
-			if not self._queue.empty() or generation != self._generation or self._terminated:
+	def _put_event(self, event, generation=None):
+		"""Queue an event for the feed thread. With a generation, give up once it is cancelled."""
+		while True:
+			if generation is not None and (generation != self._generation or self._terminated):
+				return False
+			try:
+				self._events.put(event, timeout=0.05)
+				return True
+			except queue.Full:
+				continue
+
+	def _feed_worker(self):
+		"""Feed synthesized audio to the player and report indexes as they are heard."""
+		while True:
+			try:
+				event = self._events.get_nowait()
+			except queue.Empty:
+				self._play_out()
+				event = self._events.get()
+			if event is None:
 				return
-		if self._queue.empty() and generation == self._generation and not self._terminated:
-			self._player.idle()
-			synthDoneSpeaking.notify(synth=self)
+			kind, generation = event[0], event[1]
+			if kind == "end":
+				with self._unfinished_lock:
+					self._unfinished -= 1
+				continue
+			if generation != self._generation or self._terminated:
+				continue
+			try:
+				if kind == "audio":
+					self._feed_audio(event[2], event[3], generation)
+				elif kind == "index":
+					self._feed_marker([event[2]], generation)
+				elif kind == "error":
+					log.error("MaxLogic XTTS v2 speech failed:\n%s", event[2])
+			except Exception:
+				log.exception("MaxLogic XTTS v2 audio feed failed", exc_info=True)
 
-	def _play_utterance(self, tasks, generation):
-		"""Feed an utterance's audio without waiting for it to play.
+	def _play_out(self):
+		"""Called when nothing is ready to feed.
 
-		Returns an event that is set when the last of it has been heard, or None if it made no sound.
+		NVDA's player runs onDone callbacks only inside feed() and sync(), so
+		indexes are reported only while this waits in sync().
 		"""
+		generation = self._generation
+		if self._player is not None and self._fed_since_sync:
+			self._fed_since_sync = False
+			self._player.sync()
+		with self._unfinished_lock:
+			finished = self._unfinished == 0
+		if not finished or not self._events.empty() or not self._speaking:
+			return
+		if generation != self._generation or self._terminated:
+			return
+		self._speaking = False
+		if self._player is not None:
+			self._player.idle()
+		synthDoneSpeaking.notify(synth=self)
+
+	def _feed(self, data, generation, onDone=None):
+		if generation != self._generation or self._terminated:
+			return False
 		self._ensure_player()
-		events = queue.Queue(maxsize=self.prefetchQueueSize)
-		stop_event = threading.Event()
-		producer = threading.Thread(
-			target=self._produce_utterance,
-			args=(events, stop_event, tasks, generation),
-			name="MaxLogicXTTSV2Prefetch",
-			daemon=True,
-		)
-		producer.start()
-		played = None
-		try:
-			while True:
-				if generation != self._generation or self._terminated:
-					return None
-				try:
-					event = events.get(timeout=0.05)
-				except queue.Empty:
-					continue
-				if event is None:
-					return played
-				if event[0] == "error":
-					raise RuntimeError(event[1])
-				# cancel() may have run while this thread waited on the queue.
-				if generation != self._generation or self._terminated:
-					return None
-				if event[0] == "index":
-					played = self._feed_marker([event[1]], generation)
-				elif event[1]:
-					played = self._feed_audio(event[1], event[2], generation)
-		finally:
-			stop_event.set()
+		self._player.feed(data, onDone=onDone)
+		self._fed_since_sync = True
+		if generation != self._generation or self._terminated:
+			# cancel() stopped the player while this feed was waiting, and this feed started it again.
+			self._player.stop()
+			return False
+		return True
 
 	def _feed_audio(self, audio, trailing_indexes, generation):
 		if not trailing_indexes:
-			played = threading.Event()
-			self._player.feed(audio, onDone=played.set)
-			return played
+			self._feed(audio, generation)
+			return
 		# NVDA sends the next utterance only when it hears the index that ends this one.
 		# Report it this long before the end, so the next one is synthesized while this one finishes.
 		lead_bytes = int(self.utteranceLeadSeconds * self._engine.sample_rate) * 2
 		split = max(0, len(audio) - lead_bytes)
 		split -= split % 2
-		if split:
-			self._player.feed(audio[:split])
-		played = self._feed_marker(trailing_indexes, generation)
-		if split < len(audio):
-			played = threading.Event()
-			self._player.feed(audio[split:], onDone=played.set)
-		return played
+		if split and not self._feed(audio[:split], generation):
+			return
+		if self._feed_marker(trailing_indexes, generation) and split < len(audio):
+			self._feed(audio[split:], generation)
 
 	def _feed_marker(self, indexes, generation):
 		"""Report indexes when the audio fed before them has been heard."""
-		played = threading.Event()
-
 		def reached():
 			if generation == self._generation and not self._terminated:
 				for index in indexes:
 					synthIndexReached.notify(synth=self, index=index)
-			played.set()
 
 		# A millisecond of silence carries the callback, because audio already fed cannot.
-		self._player.feed(b"\x00\x00" * max(1, self._engine.sample_rate // 1000), onDone=reached)
-		return played
+		return self._feed(b"\x00\x00" * max(1, self._engine.sample_rate // 1000), generation, onDone=reached)
 
-	def _produce_utterance(self, events, stop_event, tasks, generation):
-		"""Synthesize every piece of an utterance ahead of playback, in order."""
+	def _produce_utterance(self, tasks, generation):
+		"""Synthesize every piece of an utterance, in order, as events for the feed thread."""
 		def put(event):
-			while not stop_event.is_set():
-				try:
-					events.put(event, timeout=0.05)
-					return True
-				except queue.Full:
-					continue
-			return False
+			return self._put_event(event, generation)
 
 		sound_positions = [position for position, task in enumerate(tasks) if task["type"] in ("speak", "break")]
 		last_sound = sound_positions[-1] if sound_positions else -1
@@ -367,10 +400,10 @@ class SynthDriver(synthDriverHandler.SynthDriver):
 		first_text = True
 		try:
 			for position, task in enumerate(tasks):
-				if stop_event.is_set():
+				if generation != self._generation or self._terminated:
 					return
 				if task["type"] == "index":
-					if position < last_sound and not put(("index", task["index"])):
+					if position < last_sound and not put(("index", generation, task["index"])):
 						return
 					continue
 				audio_items = []
@@ -385,32 +418,30 @@ class SynthDriver(synthDriverHandler.SynthDriver):
 					chunks = self._chunk_text_for_playback(task["text"], small_first_chunk=first_text)
 					first_text = first_text and not chunks
 					for number, chunk in enumerate(chunks):
-						if stop_event.is_set():
+						if generation != self._generation or self._terminated:
 							return
 						items = [item for item in self._synthesize_chunk_audio_items(
 							chunk, speed, task["voice"], volume, task["language"], generation) if item]
 						if number < len(chunks) - 1:
 							for item in items:
-								if not put(("audio", item, ())):
+								if not put(("audio", generation, item, ())):
 									return
 							items = []
 						audio_items.extend(items)
 				for number, item in enumerate(audio_items):
 					last = position == last_sound and number == len(audio_items) - 1
-					if not put(("audio", item, trailing_indexes if last else ())):
+					if not put(("audio", generation, item, trailing_indexes if last else ())):
 						return
 					trailing_sent = trailing_sent or last
 			if not trailing_sent:
 				# The utterance made no sound. Its indexes still have to be reported.
 				for index in trailing_indexes:
-					if not put(("index", index)):
+					if not put(("index", generation, index)):
 						return
 		except Exception as error:
 			if HelperRequestInterrupted is not None and isinstance(error, HelperRequestInterrupted):
 				return
-			put(("error", traceback.format_exc()))
-		finally:
-			put(None)
+			put(("error", generation, traceback.format_exc()))
 
 	def _synthesize_chunk(self, text, speed, voice, volume, language, generation):
 		cached_audio = self._get_cached_audio(text, voice, speed, volume, language)

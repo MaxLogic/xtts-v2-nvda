@@ -25,9 +25,12 @@ class _Player:
     def __init__(self, **kwargs):
         self.fed = []
 
-    def feed(self, data):
+    def feed(self, data, size=None, onDone=None):
         self.fed.append(bytes(data))
+        if onDone is not None:
+            onDone()
 
+    def sync(self): pass
     def idle(self): pass
     def stop(self): pass
     def close(self): pass
@@ -147,7 +150,7 @@ class DriverCancelTests(unittest.TestCase):
             time.sleep(0.02)
             self.driver.cancel()
             time.sleep(0.15)
-        self.assertEqual(self.driver._player.fed, [])
+        self.assertEqual(self.driver._player.fed if self.driver._player else [], [])
 
     def test_changing_the_voice_does_not_wait_for_the_engine(self):
         self.addCleanup(self.engine.voice_release.set)

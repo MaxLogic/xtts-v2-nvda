@@ -4,7 +4,6 @@ NVDA's speech manager sends one utterance at a time and sends the next one
 only when the synth reports the index that ends the current one. Each line
 of a say-all is an index inside the utterance.
 """
-import collections
 import importlib.util
 import logging
 from pathlib import Path
@@ -27,57 +26,75 @@ GAP_TOLERANCE = 0.05
 
 
 class _Notifier:
-    def __init__(self, clock):
+    def __init__(self):
         self.calls = []
-        self._clock = clock
 
     def notify(self, **kwargs):
-        self.calls.append((self._clock(), kwargs))
+        self.calls.append((time.perf_counter(), kwargs))
 
 
-class _TimedPlayer:
-    """Plays fed audio in real time and runs onDone like nvwave.WavePlayer."""
+class _WasapiPlayer:
+    """Behaves like NVDA's WASAPI player (nvdaHelper/local/wasapi.cpp).
+
+    There is no playback thread: onDone callbacks run only inside feed() and
+    sync(), once playback has passed the end of their chunk. feed() waits while
+    more than half of the 400 ms buffer is filled. stop() makes a waiting feed()
+    return without playing its data, but a later feed() starts playing again.
+    """
+    HALF_BUFFER = 0.2
 
     def __init__(self, **kwargs):
-        self._lock = threading.Condition()
-        self._pending = collections.deque()
-        self._busy = False
-        self.segments = []  # (start, end, byte count)
+        self._lock = threading.Lock()
+        self._end = 0.0  # when the audio fed so far finishes playing
+        self._callbacks = []
+        self._stops = 0
+        self.segments = []  # [start, end] of each fed chunk, cut short by stop()
         self.stops = 0
-        threading.Thread(target=self._play, daemon=True).start()
+
+    def _fire_due(self):
+        now = time.perf_counter()
+        with self._lock:
+            due = [callback for end, callback in self._callbacks if end <= now]
+            self._callbacks = [(end, callback) for end, callback in self._callbacks if end > now]
+        for callback in due:
+            callback()
 
     def feed(self, data, size=None, onDone=None):
+        stops = self._stops
+        while self._end - time.perf_counter() > self.HALF_BUFFER:
+            if self._stops != stops:
+                return  # stop() woke this feed; the data is dropped
+            self._fire_due()
+            time.sleep(0.002)
+        if self._stops != stops:
+            return
         with self._lock:
-            self._pending.append((bytes(data), onDone))
-            self._lock.notify_all()
-
-    def _play(self):
-        while True:
-            with self._lock:
-                while not self._pending:
-                    self._busy = False
-                    self._lock.notify_all()
-                    self._lock.wait()
-                data, on_done = self._pending.popleft()
-                self._busy = True
-            start = time.perf_counter()
-            time.sleep(len(data) / 2 / SAMPLE_RATE)
-            with self._lock:
-                self.segments.append((start, time.perf_counter(), len(data)))
-            if on_done is not None:
-                on_done()
+            start = max(time.perf_counter(), self._end)
+            self._end = start + len(data) / 2 / SAMPLE_RATE
+            if data:
+                self.segments.append([start, self._end])
+            if onDone is not None:
+                self._callbacks.append((self._end, onDone))
+        self._fire_due()
 
     def sync(self):
-        with self._lock:
-            while self._pending or self._busy:
-                self._lock.wait(0.01)
+        stops = self._stops
+        while time.perf_counter() < self._end and self._stops == stops:
+            self._fire_due()
+            time.sleep(0.002)
+        if self._stops == stops:
+            self._fire_due()
 
     def idle(self):
         self.sync()
 
     def stop(self):
         with self._lock:
-            self._pending.clear()
+            now = time.perf_counter()
+            self.segments = [[start, min(end, now)] for start, end in self.segments if start < now]
+            self._end = now
+            self._callbacks = []
+            self._stops += 1
             self.stops += 1
 
     def close(self):
@@ -86,23 +103,24 @@ class _TimedPlayer:
     def gaps(self):
         """Silences between the end of one piece of audio and the start of the next."""
         with self._lock:
-            segments = list(self.segments)
+            segments = sorted(self.segments)
         return [later[0] - earlier[1] for earlier, later in zip(segments, segments[1:]) if later[0] - earlier[1] > GAP_TOLERANCE]
 
-    def audio_bytes(self):
+    def seconds_played(self, until=None):
+        until = time.perf_counter() if until is None else until
         with self._lock:
-            return sum(size for __, __, size in self.segments)
+            return sum(max(0.0, min(end, until) - start) for start, end in self.segments)
 
     def finished_at(self):
         with self._lock:
-            return self.segments[-1][1] if self.segments else None
+            return max(end for __, end in self.segments) if self.segments else None
 
 
 class _Command:
     pass
 
 
-def load_driver(clock):
+def load_driver():
     class _BaseDriver:
         @staticmethod
         def VoiceSetting(): return "voice"
@@ -121,13 +139,13 @@ def load_driver(clock):
     handler = types.SimpleNamespace(
         SynthDriver=_BaseDriver,
         VoiceInfo=lambda *args: args,
-        synthDoneSpeaking=_Notifier(clock),
-        synthIndexReached=_Notifier(clock),
+        synthDoneSpeaking=_Notifier(),
+        synthIndexReached=_Notifier(),
     )
     boundary = {
         "addonHandler": types.SimpleNamespace(initTranslation=lambda: None),
         "config": types.SimpleNamespace(conf={}),
-        "nvwave": types.SimpleNamespace(WavePlayer=_TimedPlayer),
+        "nvwave": types.SimpleNamespace(WavePlayer=_WasapiPlayer),
         "synthDriverHandler": handler,
         "logHandler": types.SimpleNamespace(log=logging.getLogger("test")),
         "speech": speech,
@@ -146,12 +164,12 @@ def load_driver(clock):
 
 
 class _Engine:
-    """Takes SYNTH_SECONDS per chunk and returns AUDIO_SECONDS of sound."""
+    """Takes SYNTH_SECONDS per chunk and returns audio_seconds of sound."""
     sample_rate = SAMPLE_RATE
     voice_records = {}
 
     def __init__(self):
-        self.requests = []
+        self.audio_seconds = AUDIO_SECONDS
 
     def list_voices(self): return ["test"]
     def reload_voices(self, preferred_voice=None): return "test"
@@ -161,14 +179,13 @@ class _Engine:
     def close(self): pass
 
     def stream_synthesize_to_int16(self, text, **kwargs):
-        self.requests.append((time.perf_counter(), text))
         time.sleep(SYNTH_SECONDS)
-        yield b"\x01\x00" * int(SAMPLE_RATE * AUDIO_SECONDS)
+        yield b"\x01\x00" * int(SAMPLE_RATE * self.audio_seconds)
 
 
 class SayAllTests(unittest.TestCase):
     def setUp(self):
-        self.module, self.handler, self.commands, patcher = load_driver(time.perf_counter)
+        self.module, self.handler, self.commands, patcher = load_driver()
         self.addCleanup(patcher.stop)
         self.addCleanup(sys.modules.pop, "maxlogic_xtts_v2_sayall_under_test", None)
         self.engine = _Engine()
@@ -200,34 +217,44 @@ class SayAllTests(unittest.TestCase):
     def test_a_line_index_is_reported_when_its_line_has_been_heard(self):
         self.driver.speak(["First line.", self.index(1), "Second line.", self.index(2)])
         self.wait_until_done()
-        player = self.driver._player
-        first_line_end = player.segments[0][1]
+        first_line_end = self.driver._player.segments[0][1]
         reported = dict((number, at) for at, number in self.indexes())
         self.assertGreaterEqual(reported[1], first_line_end - 0.01, "index 1 was reported before its line was heard")
         self.assertLess(reported[1], first_line_end + GAP_TOLERANCE)
+
+    def test_done_speaking_is_reported_when_the_audio_ends(self):
+        self.driver.speak(["Only line.", self.index(1)])
+        self.wait_until_done(timeout=5)
+        done_at = self.handler.synthDoneSpeaking.calls[0][0]
+        self.assertLess(done_at - self.driver._player.finished_at(), GAP_TOLERANCE, "done speaking came late")
+
+    def test_the_last_index_of_a_short_line_is_reported(self):
+        # Shorter than the lead time, so the index cannot be reported before the audio ends.
+        self.driver.utteranceLeadSeconds = 1.0
+        self.driver.speak(["Blank.", self.index(7)])
+        self.wait_until_done(timeout=5)
+        reported = dict((number, at) for at, number in self.indexes())
+        self.assertIn(7, reported)
+        self.assertLess(reported[7] - self.driver._player.finished_at(), GAP_TOLERANCE, "the index of a short line came late")
 
     def test_the_next_sentence_follows_without_a_gap(self):
         # Like NVDA: send the next utterance when the index that ends this one is reported.
         sentences = [["Sentence number %d." % n, self.index(n)] for n in (1, 2, 3)]
         self.driver.speak(sentences.pop(0))
-
-        def push_next(**kwargs):
-            if sentences:
-                self.driver.speak(sentences.pop(0))
-
         original = self.handler.synthIndexReached.notify
 
         def notify(**kwargs):
             original(**kwargs)
-            threading.Thread(target=push_next, kwargs=kwargs).start()
+            if sentences:
+                sentence = sentences.pop(0)
+                threading.Thread(target=self.driver.speak, args=(sentence,)).start()
 
         self.handler.synthIndexReached.notify = notify
         self.wait_until_done()
         player = self.driver._player
         self.assertEqual(player.gaps(), [], "silence between sentences")
-        self.assertEqual(player.audio_bytes() // int(SAMPLE_RATE * AUDIO_SECONDS * 2), 3, "a sentence was cut off")
-        last_index_at = self.indexes()[-1][0]
-        self.assertLess(last_index_at, player.finished_at(), "the last index should come before the audio ends")
+        self.assertAlmostEqual(player.seconds_played(), 3 * AUDIO_SECONDS, delta=0.05, msg="a sentence was cut off")
+        self.assertLess(self.indexes()[-1][0], player.finished_at(), "the last index should come before the audio ends")
 
     def test_speech_sent_before_the_previous_ends_is_queued_not_cut_off(self):
         self.driver.speak(["Earlier speech.", self.index(1)])
@@ -244,8 +271,21 @@ class SayAllTests(unittest.TestCase):
         self.driver.cancel()
         time.sleep(SYNTH_SECONDS + AUDIO_SECONDS + LEAD_SECONDS + 0.2)
         self.assertEqual(self.indexes(), [])
-        self.assertEqual(self.driver._player.audio_bytes(), 0)
+        # Nothing was fed, so the player may never have been created.
+        self.assertEqual(self.driver._player.seconds_played() if self.driver._player else 0, 0)
         self.assertEqual(self.handler.synthDoneSpeaking.calls, [])
+
+    def test_no_audio_is_heard_after_cancel(self):
+        # Long chunks keep the driver inside feed() while the buffer drains, where cancel() lands.
+        self.engine.audio_seconds = 1.5
+        for attempt in range(3):
+            self.driver.speak(["A long sentence number %d." % attempt, self.index(attempt)])
+            time.sleep(SYNTH_SECONDS + 0.3)
+            cancelled_at = time.perf_counter()
+            self.driver.cancel()
+            time.sleep(0.4)
+            heard_after = self.driver._player.seconds_played() - self.driver._player.seconds_played(until=cancelled_at + 0.01)
+            self.assertLess(heard_after, 0.02, "interrupted speech kept playing after cancel")
 
 
 if __name__ == "__main__":
