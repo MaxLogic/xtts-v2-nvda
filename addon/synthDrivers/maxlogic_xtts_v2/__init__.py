@@ -79,7 +79,11 @@ class SynthDriver(synthDriverHandler.SynthDriver):
 		self._volume = 100
 		self._voice = None
 		self._availableVoices = {}
-		self._reload_voices(log_reason="init")
+		if getattr(self._engine, "is_ready", True):
+			self._reload_voices(log_reason="init")
+		else:
+			# The helper is still loading the model. Asking it for voices would freeze NVDA until it is done.
+			self._load_voices_from_store()
 		self._queue = queue.Queue()
 		self._generation = 0
 		self._terminated = False
@@ -99,10 +103,30 @@ class SynthDriver(synthDriverHandler.SynthDriver):
 	def _create_engine(self):
 		if HelperEngineClient is not None and HelperEngineClient.should_try(PACKAGE_ROOT):
 			try:
-				return HelperEngineClient(PACKAGE_ROOT, log)
+				# Speech waits for the model on the speech threads; selecting the synth does not.
+				return HelperEngineClient(PACKAGE_ROOT, log, wait_until_ready=False)
 			except Exception as error:
 				log.warning("MaxLogic XTTS v2 helper unavailable, falling back to in-process engine: %s", error)
 		return _load_engine_class()(PACKAGE_ROOT)
+
+	def _load_voices_from_store(self):
+		"""List voices the way the helper does, without the helper."""
+		from ._voice_store import discover_voice_records
+		roots = [PACKAGE_ROOT]
+		if os.environ.get("MAXLOGIC_XTTS_V2_ASSET_ROOT"):
+			roots.append(os.environ["MAXLOGIC_XTTS_V2_ASSET_ROOT"])
+		records, __ = discover_voice_records(PACKAGE_ROOT, [("package", root) for root in roots])
+		voices = {}
+		for voice_name, record in records.items():
+			language = (getattr(record, "metadata", None) or {}).get("language") or "en"
+			try:
+				voices[voice_name] = VoiceInfo(voice_name, record.display_name, language)
+			except TypeError:
+				voices[voice_name] = VoiceInfo(voice_name, record.display_name)
+		self._availableVoices = voices
+		if self._voice not in voices:
+			self._voice = sorted(voices)[0] if voices else None
+		log.info("MaxLogic XTTS v2 voices listed while the helper starts. voiceCount=%s currentVoice=%s", len(voices), self._voice)
 
 	def _build_available_voices(self):
 		voices = {}

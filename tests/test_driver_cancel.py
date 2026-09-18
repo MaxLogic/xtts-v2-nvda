@@ -164,5 +164,44 @@ class DriverCancelTests(unittest.TestCase):
             self.driver._set_voice("missing")
 
 
+
+class _LoadingHelper(_SlowEngine):
+    """A helper client whose model is still loading: every request waits."""
+
+    def __init__(self):
+        super().__init__()
+        self.loaded = threading.Event()
+        self.waited = []
+
+    is_ready = property(lambda self: self.loaded.is_set())
+
+    def list_voices(self):
+        return []  # The helper reports its voices once it is ready.
+
+    def reload_voices(self, preferred_voice=None):
+        self.waited.append("reload_voices")
+        self.loaded.wait(10)
+        return "test"
+
+
+class SynthSelectionTests(unittest.TestCase):
+    def test_selecting_the_synth_does_not_wait_for_the_model(self):
+        module, handler, patcher = load_driver()
+        self.addCleanup(patcher.stop)
+        self.addCleanup(sys.modules.pop, "maxlogic_xtts_v2_under_test", None)
+        engine = _LoadingHelper()
+        self.addCleanup(engine.loaded.set)
+        started = time.perf_counter()
+        with patch.object(module.SynthDriver, "_create_engine", lambda driver: engine):
+            driver = module.SynthDriver()
+        self.addCleanup(driver.terminate)
+        self.assertLess(time.perf_counter() - started, 0.5, "NVDA waited for the model to load")
+        self.assertEqual(engine.waited, [])
+        # The voice list comes from the voice store, as the helper builds it.
+        from maxlogic_xtts_v2_under_test._voice_store import discover_voice_records
+        records, __ = discover_voice_records(str(ROOT / "synthDrivers/maxlogic_xtts_v2"), [("package", str(ROOT / "synthDrivers/maxlogic_xtts_v2"))])
+        self.assertEqual(sorted(driver.availableVoices), sorted(records))
+
+
 if __name__ == "__main__":
     unittest.main()
