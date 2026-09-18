@@ -1,5 +1,21 @@
 # Changelog
 
+## Unreleased
+
+- Say-all no longer pauses before every line and sentence. The next sentence is synthesized while the current one plays.
+- Speech that is sent while earlier speech still plays is queued instead of cutting it off.
+- Interrupted speech also stops in the helper, so the next thing you hear starts sooner. Audio from interrupted speech is never played.
+- Changing the voice in the settings ring no longer freezes NVDA until the helper answers.
+- Operations cut short when NVDA exits say "The operation was interrupted" instead of "list index out of range".
+- Clone and save failures are written to the NVDA log.
+- A damaged speech cache is set aside and recreated instead of turning caching off.
+- `helper.log` moves to `helper.old.log` once it passes 2 MB.
+- Catalog updates in a new add-on version are shown; a cached copy of an older bundled catalog no longer hides them.
+- The voice manager keeps the loaded model when voices are installed or removed, and frees it 10 minutes after the manager closes.
+- The voice manager speaks success messages instead of showing a dialog to dismiss. A dialog still appears when NVDA must be restarted.
+- Every control on the voice manager pages has its own access key, and focus stays where it was when a page reloads.
+- The voice manager logs why a voice list, catalog or search failed to load.
+
 ## 0.1.7
 
 - Fix Close, window X and Escape; add Ctrl+F4 to close the manager.
