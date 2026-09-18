@@ -1,3 +1,4 @@
+import contextlib
 import os
 import queue
 import re
@@ -422,6 +423,8 @@ class SynthDriver(synthDriverHandler.SynthDriver):
 		trailing_indexes = [task["index"] for task in tasks[last_sound + 1:] if task["type"] == "index"]
 		trailing_sent = False
 		first_text = True
+		# The end of the utterance carries its trailing indexes, so hold back what _feed_audio reports them before.
+		lead_bytes = int(self.utteranceLeadSeconds * self._engine.sample_rate) * 2
 		try:
 			for position, task in enumerate(tasks):
 				if generation != self._generation or self._terminated:
@@ -444,14 +447,23 @@ class SynthDriver(synthDriverHandler.SynthDriver):
 					for number, chunk in enumerate(chunks):
 						if generation != self._generation or self._terminated:
 							return
-						items = [item for item in self._synthesize_chunk_audio_items(
-							chunk, speed, task["voice"], volume, task["language"], generation) if item]
-						if number < len(chunks) - 1:
-							for item in items:
-								if not put(("audio", generation, item, ())):
-									return
-							items = []
-						audio_items.extend(items)
+						# Play each piece as it arrives: a long chunk takes seconds to synthesize in full.
+						hold = lead_bytes if position == last_sound and number == len(chunks) - 1 else 0
+						pending = bytearray()
+						pieces = self._synthesize_chunk_pieces(chunk, speed, task["voice"], volume, task["language"], generation)
+						with contextlib.closing(pieces):
+							for piece in pieces:
+								pending.extend(piece)
+								ready = len(pending) - hold
+								ready -= ready % 2
+								if ready > 0 and self._live_stream_playback():
+									if not put(("audio", generation, bytes(pending[:ready]), ())):
+										return
+									del pending[:ready]
+						if pending and hold:
+							audio_items.append(bytes(pending))
+						elif pending and not put(("audio", generation, bytes(pending), ())):
+							return
 				for number, item in enumerate(audio_items):
 					last = position == last_sound and number == len(audio_items) - 1
 					if not put(("audio", generation, item, trailing_indexes if last else ())):
@@ -483,36 +495,32 @@ class SynthDriver(synthDriverHandler.SynthDriver):
 		self._store_cached_audio(text, voice, speed, volume, language, audio_bytes)
 		return audio_bytes
 
-	def _synthesize_chunk_audio_items(self, text, speed, voice, volume, language, generation):
+	def _live_stream_playback(self):
+		"""Streamed pieces play as they arrive unless MAXLOGIC_XTTS_V2_LIVE_STREAM_PLAYBACK turns it off."""
+		return os.environ.get("MAXLOGIC_XTTS_V2_LIVE_STREAM_PLAYBACK", "").strip().lower() not in ("0", "false", "no", "off")
+
+	def _synthesize_chunk_pieces(self, text, speed, voice, volume, language, generation):
+		"""Yield the chunk's audio in the pieces the helper streams it in."""
 		cached_audio = self._get_cached_audio(text, voice, speed, volume, language)
 		if cached_audio is not None:
-			return [cached_audio]
+			yield cached_audio
+			return
 		streamer = getattr(self._engine, "stream_synthesize_to_int16", None)
 		if streamer is None:
-			return [self._synthesize_chunk(text, speed, voice, volume, language, generation)]
+			yield self._synthesize_chunk(text, speed, voice, volume, language, generation)
+			return
 		full_audio = bytearray()
-		live_stream = os.environ.get("MAXLOGIC_XTTS_V2_LIVE_STREAM_PLAYBACK", "").strip().lower() in ("1", "true", "yes", "on")
-		audio_items = []
-		for audio in streamer(
-			text,
-			speed=speed,
-			voice=voice,
-			volume=volume,
-			language=language,
-			generation=generation,
-		):
-			audio_bytes = audio.tobytes() if hasattr(audio, "tobytes") else bytes(audio)
-			if not audio_bytes:
-				continue
-			full_audio.extend(audio_bytes)
-			if live_stream:
-				audio_items.append(audio_bytes)
+		# Closing the stream early, on cancel, releases the helper client for the next request.
+		stream = streamer(text, speed=speed, voice=voice, volume=volume, language=language, generation=generation)
+		with contextlib.closing(stream):
+			for audio in stream:
+				audio_bytes = audio.tobytes() if hasattr(audio, "tobytes") else bytes(audio)
+				if not audio_bytes:
+					continue
+				full_audio.extend(audio_bytes)
+				yield audio_bytes
 		if full_audio:
-			combined_audio = bytes(full_audio)
-			self._store_cached_audio(text, voice, speed, volume, language, combined_audio)
-			if not live_stream:
-				audio_items.append(combined_audio)
-		return audio_items
+			self._store_cached_audio(text, voice, speed, volume, language, bytes(full_audio))
 
 	def _chunk_text_for_playback(self, text, small_first_chunk=True):
 		text = self._sanitize_text_for_tts(text)

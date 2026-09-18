@@ -183,6 +183,15 @@ class _Engine:
         yield b"\x01\x00" * int(SAMPLE_RATE * self.audio_seconds)
 
 
+class _StreamingEngine(_Engine):
+    """Streams one piece per 20 characters, like the helper: each takes SYNTH_SECONDS and plays for AUDIO_SECONDS."""
+
+    def stream_synthesize_to_int16(self, text, **kwargs):
+        for __ in range(max(1, len(text) // 20)):
+            time.sleep(SYNTH_SECONDS)
+            yield b"\x01\x00" * int(SAMPLE_RATE * self.audio_seconds)
+
+
 class SayAllTests(unittest.TestCase):
     def setUp(self):
         self.module, self.handler, self.commands, patcher = load_driver()
@@ -274,6 +283,19 @@ class SayAllTests(unittest.TestCase):
         # Nothing was fed, so the player may never have been created.
         self.assertEqual(self.driver._player.seconds_played() if self.driver._player else 0, 0)
         self.assertEqual(self.handler.synthDoneSpeaking.calls, [])
+
+    def test_a_long_line_plays_on_after_its_first_words(self):
+        # The short first chunk plays while the long rest is still being synthesized.
+        # Waiting for the whole rest before playing it left seconds of silence after the first words.
+        self.driver._engine = self.engine = _StreamingEngine()
+        line = "- Closing during startup, by switching synths or exiting NVDA, stops the half-loaded helper instead of waiting for it."
+        self.driver.speak([line, self.index(1)])
+        self.wait_until_done()
+        player = self.driver._player
+        self.assertEqual(player.gaps(), [], "silence after the first words of the line")
+        reported = dict((number, at) for at, number in self.indexes())
+        self.assertAlmostEqual(player.finished_at() - reported[1], LEAD_SECONDS, delta=GAP_TOLERANCE,
+            msg="the index that ends the line should still come the lead time before its end")
 
     def test_no_audio_is_heard_after_cancel(self):
         # Long chunks keep the driver inside feed() while the buffer drains, where cancel() lands.
