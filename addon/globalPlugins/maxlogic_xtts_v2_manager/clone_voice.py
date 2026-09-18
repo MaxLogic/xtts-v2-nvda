@@ -1,6 +1,7 @@
 """Keyboard-first workflow for creating a voice from prepared recordings."""
 import ui
 import wx
+from logHandler import log
 
 from . import service
 from ._ui import StatusText, NamedAccessible, run_busy, ButtonBusy
@@ -385,6 +386,7 @@ class CloneVoicePanel(wx.Panel):
 				lambda: service.clone_voice_draft(paths, language, options, synthesis_settings),
 				button=self.create_button, completion_message="")
 		except Exception as error:
+			log.error("MaxLogic XTTS v2 cloning failed: %s", error, exc_info=True)
 			self.say(_("Cloning failed: {error}").format(error=error))
 			self.create_button.SetFocus()
 			return
@@ -428,6 +430,7 @@ class CloneVoicePanel(wx.Panel):
 					return
 				record = save(overwrite=True)
 		except Exception as error:
+			log.error("MaxLogic XTTS v2 saving a cloned voice failed: %s", error, exc_info=True)
 			self.save_button.SetFocus()
 			self.say(_("Could not save voice: {error}. Your test clone is still available.").format(error=error))
 			return
