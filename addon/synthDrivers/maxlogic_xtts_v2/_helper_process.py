@@ -107,11 +107,11 @@ def _pipe_lines(stream, poll_seconds=0.01):
 	peek.restype = wintypes.BOOL
 	fd = stream.fileno()
 	handle = msvcrt.get_osfhandle(fd)
-	available = wintypes.DWORD()
-	if not peek(handle, None, 0, None, ctypes.byref(available), None):
-		# Not a pipe, for example a file: reads do not block there.
+	if kernel32.GetFileType(wintypes.HANDLE(handle)) != 3:  # FILE_TYPE_PIPE
+		# For example a file: reads do not block there.
 		yield from stream
 		return
+	available = wintypes.DWORD()
 	pending = b""
 	while True:
 		if not peek(handle, None, 0, None, ctypes.byref(available), None):
