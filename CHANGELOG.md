@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Selecting XTTS, or starting NVDA with it, no longer freezes NVDA while the model loads (35 to 60 s). Speech starts once the model is ready.
 - Say-all no longer pauses before every line and sentence. The next sentence is synthesized while the current one plays.
 - Speech that is sent while earlier speech still plays is queued instead of cutting it off.
 - Interrupted speech also stops in the helper, so the next thing you hear starts sooner. Audio from interrupted speech is never played.

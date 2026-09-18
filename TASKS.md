@@ -7,7 +7,6 @@
 ## From the September 2026 review
 
 Speech:
-- Selecting the synthesizer freezes NVDA until the model has loaded (35 to 60 s here). `SynthDriver.__init__` waits for the helper's ready message on NVDA's main thread. Start the helper in the background, list the voices from the voice store, and queue speech until the helper is ready. Voice Switcher presets hit the same freeze.
 - Play streamed audio as it arrives. `MAXLOGIC_XTTS_V2_LIVE_STREAM_PLAYBACK` has no effect on first audio: `_synthesize_chunk_audio_items` collects every streamed piece before any is played. The first streamed piece arrives after 647 ms at the median; a whole short chunk after 1,240 ms.
 - Tune `utteranceLeadSeconds` (1.0 s) from say-all in NVDA. Log how long the first chunk of each utterance takes and how early its end index was reported.
 - `SpeechCache.get_audio` commits a write on every hit to update the use count. Batch those updates if the cache grows.
