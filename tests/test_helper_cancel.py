@@ -64,7 +64,7 @@ class XTTSV2Engine(object):
 
 class HelperCancelTests(unittest.TestCase):
     def setUp(self):
-        self._root = tempfile.TemporaryDirectory(prefix="xtts-cancel-test-")
+        self._root = tempfile.TemporaryDirectory(prefix="xtts-cancel-test-", ignore_cleanup_errors=True)
         self.addCleanup(self._root.cleanup)
         package_root = os.path.join(self._root.name, "package")
         os.mkdir(package_root)
