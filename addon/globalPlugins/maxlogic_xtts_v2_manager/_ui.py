@@ -218,6 +218,17 @@ class ButtonBusy:
 			button.GetParent().Layout()
 
 
+def _busy_outcome(result, errors, completion_message):
+	if errors:
+		raise errors[0]
+	if not result:
+		# The event loop ended first, for example because NVDA is exiting. The work may still be running.
+		raise RuntimeError(_("The operation was interrupted and did not finish."))
+	if completion_message:
+		ui.message(completion_message)
+	return result[0]
+
+
 def run_busy(parent, message, work, *, button=None, completion_message=None):
 	"""Run I/O while the visible manager paints, with input locked until return."""
 	if button is None:
@@ -257,11 +268,7 @@ def run_busy(parent, message, work, *, button=None, completion_message=None):
 			top.Enable(was_enabled)
 			if focus and not focus.IsBeingDeleted() and focus.IsEnabled() and top.IsActive():
 				focus.SetFocus()
-	if errors:
-		raise errors[0]
-	if completion_message:
-		ui.message(completion_message)
-	return result[0]
+	return _busy_outcome(result, errors, completion_message)
 
 
 def _run_busy_dialog(parent, message, work, completion_message=None):
@@ -302,8 +309,4 @@ def _run_busy_dialog(parent, message, work, completion_message=None):
 		dialog.ShowModal()
 	finally:
 		dialog.Destroy()
-	if errors:
-		raise errors[0]
-	if completion_message:
-		ui.message(completion_message)
-	return result[0]
+	return _busy_outcome(result, errors, completion_message)
