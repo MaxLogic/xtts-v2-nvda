@@ -226,7 +226,7 @@ class SayAllTests(unittest.TestCase):
     def test_a_line_index_is_reported_when_its_line_has_been_heard(self):
         self.driver.speak(["First line.", self.index(1), "Second line.", self.index(2)])
         self.wait_until_done()
-        first_line_end = self.driver._player.segments[0][1]
+        first_line_end = self.driver._player.segments[0][0] + AUDIO_SECONDS
         reported = dict((number, at) for at, number in self.indexes())
         self.assertGreaterEqual(reported[1], first_line_end - 0.01, "index 1 was reported before its line was heard")
         self.assertLess(reported[1], first_line_end + GAP_TOLERANCE)
@@ -289,9 +289,12 @@ class SayAllTests(unittest.TestCase):
         # Waiting for the whole rest before playing it left seconds of silence after the first words.
         self.driver._engine = self.engine = _StreamingEngine()
         line = "- Closing during startup, by switching synths or exiting NVDA, stops the half-loaded helper instead of waiting for it."
+        spoken_at = time.perf_counter()
         self.driver.speak([line, self.index(1)])
         self.wait_until_done()
         player = self.driver._player
+        self.assertLess(player.segments[0][0] - spoken_at, SYNTH_SECONDS + GAP_TOLERANCE,
+            "the line did not start when its first piece arrived")
         self.assertEqual(player.gaps(), [], "silence after the first words of the line")
         reported = dict((number, at) for at, number in self.indexes())
         self.assertAlmostEqual(player.finished_at() - reported[1], LEAD_SECONDS, delta=GAP_TOLERANCE,

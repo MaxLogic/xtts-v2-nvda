@@ -32,17 +32,26 @@ except Exception:
 
 addonHandler.initTranslation()
 
+# Characters XTTS accepts per request before it warns and may cut the audio short,
+# copied from TTS.tts.layers.xtts.tokenizer.VoiceBpeTokenizer.char_limits.
+XTTS_CHAR_LIMITS = {
+	"en": 250, "de": 253, "fr": 273, "es": 239, "it": 213, "pt": 203, "pl": 224, "zh": 82,
+	"ar": 166, "cs": 186, "ru": 182, "nl": 251, "tr": 226, "ja": 71, "hu": 224, "ko": 95,
+}
+# The end of a sentence: . ! ? or an ellipsis before a space, or CJK end punctuation.
+SENTENCE_END = re.compile(r"[.!?\u2026]+[\"')\]}]*(?=\s|$)|[\u3002\uff01\uff1f]+")
+
 
 class SynthDriver(synthDriverHandler.SynthDriver):
 	name = "maxlogic_xtts_v2"
 	description = "MaxLogic XTTS v2"
-	firstChunkTargetChars = 14
-	firstChunkMaxChars = 24
-	targetChunkChars = 90
-	maxChunkChars = 130
+	# Chunks stay this far under XTTS's text limit for the language. See XTTS_CHAR_LIMITS.
+	chunkLimitRatio = 0.8
 	prefetchQueueSize = 2
 	# Seconds before the end of an utterance at which its last index is reported. See _feed_audio.
 	utteranceLeadSeconds = 1.0
+	# Audio is fed in slices this long, so the played position is known this precisely.
+	feedSliceSeconds = 0.05
 	supportedSettings = (
 		synthDriverHandler.SynthDriver.VoiceSetting(),
 		synthDriverHandler.SynthDriver.RateSetting(),
@@ -95,6 +104,12 @@ class SynthDriver(synthDriverHandler.SynthDriver):
 		self._unfinished_lock = threading.Lock()
 		self._speaking = False
 		self._fed_since_sync = False
+		# Samples fed and played in the generation being fed, and the utterance end waiting to be reported.
+		self._counted_generation = None
+		self._fed_samples = 0
+		self._played_samples = 0
+		self._pending_end = None
+		self._pending_end_lock = threading.Lock()
 		self._events = queue.Queue(maxsize=self.prefetchQueueSize * 2)
 		self._worker = threading.Thread(target=self._speech_worker, name="MaxLogicXTTSV2Speech", daemon=True)
 		self._worker.start()
@@ -348,7 +363,9 @@ class SynthDriver(synthDriverHandler.SynthDriver):
 				continue
 			try:
 				if kind == "audio":
-					self._feed_audio(event[2], event[3], generation)
+					self._feed_audio(event[2], generation)
+				elif kind == "utterance_end":
+					self._report_before_end(event[2], generation)
 				elif kind == "index":
 					self._feed_marker([event[2]], generation)
 				elif kind == "error":
@@ -372,6 +389,8 @@ class SynthDriver(synthDriverHandler.SynthDriver):
 			return
 		if generation != self._generation or self._terminated:
 			return
+		# All audio has been heard, so an utterance end not yet reported is due.
+		self._report_pending_end(force=True)
 		self._speaking = False
 		if self._player is not None:
 			self._player.idle()
@@ -389,19 +408,53 @@ class SynthDriver(synthDriverHandler.SynthDriver):
 			return False
 		return True
 
-	def _feed_audio(self, audio, trailing_indexes, generation):
-		if not trailing_indexes:
-			self._feed(audio, generation)
-			return
-		# NVDA sends the next utterance only when it hears the index that ends this one.
-		# Report it this long before the end, so the next one is synthesized while this one finishes.
-		lead_bytes = int(self.utteranceLeadSeconds * self._engine.sample_rate) * 2
-		split = max(0, len(audio) - lead_bytes)
-		split -= split % 2
-		if split and not self._feed(audio[:split], generation):
-			return
-		if self._feed_marker(trailing_indexes, generation) and split < len(audio):
-			self._feed(audio[split:], generation)
+	def _feed_audio(self, audio, generation):
+		if generation != self._counted_generation:
+			self._counted_generation = generation
+			self._fed_samples = 0
+			self._played_samples = 0
+			with self._pending_end_lock:
+				self._pending_end = None
+		slice_bytes = max(1, int(self.feedSliceSeconds * self._engine.sample_rate)) * 2
+		for start in range(0, len(audio), slice_bytes):
+			part = audio[start:start + slice_bytes]
+			self._fed_samples += len(part) // 2
+			played = self._fed_samples
+
+			def reached(played=played):
+				if generation == self._counted_generation:
+					self._played_samples = max(self._played_samples, played)
+					self._report_pending_end()
+
+			if not self._feed(part, generation, onDone=reached):
+				return
+
+	def _report_before_end(self, indexes, generation):
+		"""Report the indexes that end an utterance utteranceLeadSeconds before its audio ends.
+
+		NVDA sends the next utterance only when it hears the index that ends this one.
+		Reporting it early lets the next one be synthesized while this one finishes.
+		"""
+		if generation != self._counted_generation:
+			# The utterance made no sound.
+			self._counted_generation = generation
+			self._fed_samples = 0
+			self._played_samples = 0
+		lead_samples = int(self.utteranceLeadSeconds * self._engine.sample_rate)
+		with self._pending_end_lock:
+			self._pending_end = (generation, self._fed_samples - lead_samples, indexes)
+		self._report_pending_end()
+
+	def _report_pending_end(self, force=False):
+		with self._pending_end_lock:
+			pending = self._pending_end
+			if pending is None or (not force and self._played_samples < pending[1]):
+				return
+			self._pending_end = None
+		generation, __, indexes = pending
+		if generation == self._generation and not self._terminated:
+			for index in indexes:
+				synthIndexReached.notify(synth=self, index=index)
 
 	def _feed_marker(self, indexes, generation):
 		"""Report indexes when the audio fed before them has been heard."""
@@ -421,10 +474,6 @@ class SynthDriver(synthDriverHandler.SynthDriver):
 		sound_positions = [position for position, task in enumerate(tasks) if task["type"] in ("speak", "break")]
 		last_sound = sound_positions[-1] if sound_positions else -1
 		trailing_indexes = [task["index"] for task in tasks[last_sound + 1:] if task["type"] == "index"]
-		trailing_sent = False
-		first_text = True
-		# The end of the utterance carries its trailing indexes, so hold back what _feed_audio reports them before.
-		lead_bytes = int(self.utteranceLeadSeconds * self._engine.sample_rate) * 2
 		try:
 			for position, task in enumerate(tasks):
 				if generation != self._generation or self._terminated:
@@ -433,47 +482,30 @@ class SynthDriver(synthDriverHandler.SynthDriver):
 					if position < last_sound and not put(("index", generation, task["index"])):
 						return
 					continue
-				audio_items = []
 				if task["type"] == "break":
 					frame_count = int(self._engine.sample_rate * (max(0, task["time"]) / 1000.0))
-					if frame_count:
-						audio_items = [b"\x00\x00" * frame_count]
+					if frame_count and not put(("audio", generation, b"\x00\x00" * frame_count)):
+						return
 				elif task["type"] == "speak":
 					speed = self._nvda_rate_to_speed(task["rate"])
 					volume = max(0.0, min(1.0, task["volume"] / 100.0))
-					# Only the start of an utterance waits for synthesis. Later text is ready in time.
-					chunks = self._chunk_text_for_playback(task["text"], small_first_chunk=first_text)
-					first_text = first_text and not chunks
-					for number, chunk in enumerate(chunks):
+					for chunk in self._chunk_text_for_playback(task["text"], task["language"]):
 						if generation != self._generation or self._terminated:
 							return
-						# Play each piece as it arrives: a long chunk takes seconds to synthesize in full.
-						hold = lead_bytes if position == last_sound and number == len(chunks) - 1 else 0
-						pending = bytearray()
+						# Play each piece as it arrives: a whole chunk takes seconds to synthesize.
+						live = self._live_stream_playback()
+						whole = bytearray()
 						pieces = self._synthesize_chunk_pieces(chunk, speed, task["voice"], volume, task["language"], generation)
 						with contextlib.closing(pieces):
 							for piece in pieces:
-								pending.extend(piece)
-								ready = len(pending) - hold
-								ready -= ready % 2
-								if ready > 0 and self._live_stream_playback():
-									if not put(("audio", generation, bytes(pending[:ready]), ())):
-										return
-									del pending[:ready]
-						if pending and hold:
-							audio_items.append(bytes(pending))
-						elif pending and not put(("audio", generation, bytes(pending), ())):
+								if not live:
+									whole.extend(piece)
+								elif not put(("audio", generation, piece)):
+									return
+						if whole and not put(("audio", generation, bytes(whole))):
 							return
-				for number, item in enumerate(audio_items):
-					last = position == last_sound and number == len(audio_items) - 1
-					if not put(("audio", generation, item, trailing_indexes if last else ())):
-						return
-					trailing_sent = trailing_sent or last
-			if not trailing_sent:
-				# The utterance made no sound. Its indexes still have to be reported.
-				for index in trailing_indexes:
-					if not put(("index", generation, index)):
-						return
+			if trailing_indexes:
+				put(("utterance_end", generation, trailing_indexes))
 		except Exception as error:
 			if HelperRequestInterrupted is not None and isinstance(error, HelperRequestInterrupted):
 				return
@@ -522,25 +554,43 @@ class SynthDriver(synthDriverHandler.SynthDriver):
 		if full_audio:
 			self._store_cached_audio(text, voice, speed, volume, language, bytes(full_audio))
 
-	def _chunk_text_for_playback(self, text, small_first_chunk=True):
+	def _chunk_limit(self, language):
+		key = (language or "en").strip().lower().replace("_", "-").split("-", 1)[0]
+		return int(XTTS_CHAR_LIMITS.get(key, 250) * self.chunkLimitRatio)
+
+	def _chunk_text_for_playback(self, text, language=None):
+		"""Split text into as few requests as possible, at sentence ends, within XTTS's text limit."""
 		text = self._sanitize_text_for_tts(text)
 		if not text:
 			return []
+		limit = self._chunk_limit(language)
 		chunks = []
-		remaining = text
-		first = small_first_chunk
-		while remaining:
-			target = self.firstChunkTargetChars if first else self.targetChunkChars
-			max_chars = self.firstChunkMaxChars if first else self.maxChunkChars
-			chunk, remaining = self._split_text_once(
-				remaining,
-				target_chars=target,
-				max_chars=max_chars,
-				min_chars=8 if first else 48,
-			)
-			chunks.append(chunk)
-			first = False
+		current = ""
+		for sentence in self._sentences(text):
+			candidate = current + sentence
+			if len(candidate.strip()) <= limit:
+				current = candidate
+				continue
+			if current.strip():
+				chunks.append(current.strip())
+			current = sentence
+			# A sentence over the limit is split at its best clause boundary.
+			while len(current.strip()) > limit:
+				head, rest = self._split_text_once(current.strip(), target_chars=limit, max_chars=limit, min_chars=min(48, limit // 2))
+				chunks.append(head)
+				current = rest
+		if current.strip():
+			chunks.append(current.strip())
 		return chunks
+
+	def _sentences(self, text):
+		"""Yield the sentences of text, each with the whitespace in front of it."""
+		start = 0
+		for match in SENTENCE_END.finditer(text):
+			yield text[start:match.end()]
+			start = match.end()
+		if start < len(text):
+			yield text[start:]
 
 	def _sanitize_text_for_tts(self, text):
 		text = text or ""

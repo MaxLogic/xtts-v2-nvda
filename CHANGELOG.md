@@ -4,6 +4,7 @@
 
 - Selecting XTTS, or starting NVDA with it, no longer freezes NVDA while the model loads (35 to 60 s). Speech starts once the model is ready.
 - A long line no longer stops after its first words. The rest used to play only once it was synthesized in full, which takes several seconds; now it plays as the helper streams it. Set `MAXLOGIC_XTTS_V2_LIVE_STREAM_PLAYBACK=0` to go back to whole chunks.
+- Text goes to XTTS in whole sentences, as many as fit under its limit for the language (80% of it, 200 characters for English), instead of a few words followed by the rest. Each extra request cost a short silence, and the split broke the sentence melody.
 - Say-all no longer pauses before every line and sentence. The next sentence is synthesized while the current one plays.
 - Speech that is sent while earlier speech still plays is queued instead of cutting it off.
 - Interrupted speech also stops in the helper, so the next thing you hear starts sooner. Audio from interrupted speech is never played.
