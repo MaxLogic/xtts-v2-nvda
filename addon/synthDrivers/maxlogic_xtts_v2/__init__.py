@@ -138,7 +138,8 @@ class SynthDriver(synthDriverHandler.SynthDriver):
 			play_loading_sound(READY, logger=log)
 
 	def _announce_ready(self):
-		if not self._terminated:
+		# This can run before __init__ has set _terminated.
+		if not getattr(self, "_terminated", False):
 			# Waiting holds back speech until the sound has finished, so the two do not overlap.
 			play_loading_sound(READY, wait=True, logger=log)
 
