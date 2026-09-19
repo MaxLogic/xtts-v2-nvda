@@ -32,7 +32,7 @@
 <li>Text is sent in whole sentences, within XTTS's own length limit for each language</li>
 <li>Say-all without pauses between lines; the next sentence is synthesized while the current one plays</li>
 <li>Selecting the synth never freezes NVDA: the model loads in the background</li>
-<li>Spoken announcements when XTTS starts loading and when it is ready, each one optional and replaceable</li>
+<li>Spoken announcements when XTTS starts loading, every 10 seconds while it is still loading, and when it is ready, each one optional and replaceable</li>
 <li>Persistent short-speech cache, short-lived paragraph hot cache, and cached voice conditioning</li>
 </ul>
 <h2 id="performance">Performance</h2>
@@ -95,7 +95,7 @@
 <p>The bootstrap script installs Python packages pinned for the tested XTTS streaming stack: <code>coqui-tts==0.27.5</code>, <code>transformers==4.57.6</code>, <code>torchcodec==0.16.0</code>, <code>numpy&lt;2</code>, and PyTorch/Torchaudio 2.11.0 for the selected provider. Auto setup prefers Python 3.11 when available because that is the tested environment.</p>
 <p>By default the helper uses the Coqui model name <code>tts_models/multilingual/multi-dataset/xtts_v2</code>.</p>
 <p>Normal NVDA speech cancellation stops current audio without restarting the XTTS helper. This keeps the warmed CUDA runtime available for the next utterance; the helper is closed when the synth is terminated or NVDA switches away from it.</p>
-<p>Selecting <code>MaxLogic XTTS v2</code>, or starting NVDA with it, does not wait for the model. NVDA lists the installed voices at once and plays a short "Loading X T T S" announcement. Speech sent while the model loads waits, and "X T T S is ready" plays before it starts. Turn these sounds off or replace them on the Loading Sounds page of the voice manager.</p>
+<p>Selecting <code>MaxLogic XTTS v2</code>, or starting NVDA with it, does not wait for the model. NVDA lists the installed voices at once and plays a short "Loading X T T S" announcement. Every 10 seconds while it is still loading, "Still loading, please wait" plays. Speech sent while the model loads waits, and "X T T S is ready" plays before it starts. Turn these sounds off or replace them on the Loading Sounds page of the voice manager.</p>
 <p>XTTS is still a large neural voice-cloning model, so uncached text needs the model, unlike classic screen-reader synths. With the pinned helper runtime on an NVIDIA GPU, it generates speech about three times faster than it plays, streams it as it is generated, and serves repeated UI text from the persistent speech cache. If a different helper runtime does not report streaming support, the add-on falls back to full-buffer synthesis.</p>
 <h2 id="voice-profiles">Voice profiles</h2>
 <p>XTTS v2 clones from reference audio. In this add-on, a "voice" is a profile that contains one or more reference audio files, or an XTTS conditioning <code>.pth</code>, plus profile metadata.</p>
@@ -130,7 +130,7 @@
 <li><code>Browse Voices</code>: Hugging Face search, official downloadable profiles, and curated community profiles</li>
 <li><code>Extract Sample</code>: load a long recording, set markers, preview the selection, and save it as an XTTS profile</li>
 <li><code>Speech Cache</code>: cache settings, stats, clear, and compact actions</li>
-<li><code>Loading Sounds</code>: turn the sounds for XTTS starting to load and being ready on or off, or choose other WAV files for them</li>
+<li><code>Loading Sounds</code>: turn the sounds for XTTS starting to load, still loading and being ready on or off, choose other WAV files for them, and set how often the still loading sound repeats (3 to 120 seconds, 10 by default)</li>
 </ul>
 <p>Browse Voices:</p>
 <ul>

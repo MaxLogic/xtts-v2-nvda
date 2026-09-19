@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 import sys
 import tempfile
+import time
 import types
 import unittest
 from unittest.mock import patch
@@ -78,6 +79,41 @@ class LoadingSoundTests(unittest.TestCase):
         self.assertTrue(self.sounds.is_playable_wave(self.sounds.default_sound_path(self.sounds.READY)))
         self.assertFalse(self.sounds.is_playable_wave(self.custom), "a broken WAV file was accepted")
         self.assertFalse(self.sounds.is_playable_wave(self.custom + ".missing"))
+
+    def test_the_waiting_sound_repeats_every_ten_seconds_by_default(self):
+        settings = self.sounds.load_sound_settings()
+        self.assertEqual(settings[self.sounds.WAITING], {"enabled": True, "path": "", "intervalSeconds": 10})
+        self.assertEqual(self.sounds.waiting_interval(settings), 10)
+        self.assertTrue(os.path.isfile(self.sounds.default_sound_path(self.sounds.WAITING)))
+
+    def test_the_waiting_interval_is_kept_in_a_sensible_range(self):
+        for stored, expected in ((1, 3), (500, 120), ("soon", 10), (7.9, 7)):
+            with self.subTest(stored=stored):
+                settings = self.sounds.normalize_sound_settings({"waiting": {"intervalSeconds": stored}})
+                self.assertEqual(settings["waiting"]["intervalSeconds"], expected)
+        settings = self.sounds.normalize_sound_settings({"waiting": {"enabled": False}})
+        self.assertIsNone(self.sounds.waiting_interval(settings))
+
+    def test_the_announcer_repeats_the_waiting_sound_until_ready(self):
+        played = []
+        announcer = self.sounds.LoadingAnnouncer(play=lambda kind, wait=False, logger=None: played.append(kind), interval=0.05)
+        announcer.start()
+        time.sleep(0.3)
+        announcer.finish()
+        after_ready = len(played)
+        time.sleep(0.15)
+        self.assertEqual(played[0], self.sounds.LOADING)
+        self.assertGreaterEqual(played.count(self.sounds.WAITING), 3)
+        self.assertEqual(played[-1], self.sounds.READY)
+        self.assertEqual(len(played), after_ready, "a waiting sound played after the ready sound")
+
+    def test_stopping_the_announcer_plays_no_ready_sound(self):
+        played = []
+        announcer = self.sounds.LoadingAnnouncer(play=lambda kind, wait=False, logger=None: played.append(kind), interval=0.05)
+        announcer.start()
+        announcer.stop()
+        time.sleep(0.15)
+        self.assertEqual(played, [self.sounds.LOADING])
 
     def test_a_failing_player_does_not_raise(self):
         sys.modules["nvwave"].playWaveFile = lambda *args, **kwargs: 1 / 0

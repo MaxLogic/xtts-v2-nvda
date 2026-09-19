@@ -28,7 +28,7 @@ This is a high-performance XTTS v2 implementation. On an NVIDIA GPU it generates
 - Text is sent in whole sentences, within XTTS's own length limit for each language
 - Say-all without pauses between lines; the next sentence is synthesized while the current one plays
 - Selecting the synth never freezes NVDA: the model loads in the background
-- Spoken announcements when XTTS starts loading and when it is ready, each one optional and replaceable
+- Spoken announcements when XTTS starts loading, every 10 seconds while it is still loading, and when it is ready, each one optional and replaceable
 - Persistent short-speech cache, short-lived paragraph hot cache, and cached voice conditioning
 
 ## Performance
@@ -74,7 +74,7 @@ By default the helper uses the Coqui model name `tts_models/multilingual/multi-d
 
 Normal NVDA speech cancellation stops current audio without restarting the XTTS helper. This keeps the warmed CUDA runtime available for the next utterance; the helper is closed when the synth is terminated or NVDA switches away from it.
 
-Selecting `MaxLogic XTTS v2`, or starting NVDA with it, does not wait for the model. NVDA lists the installed voices at once and plays a short "Loading X T T S" announcement. Speech sent while the model loads waits, and "X T T S is ready" plays before it starts. Turn these sounds off or replace them on the Loading Sounds page of the voice manager.
+Selecting `MaxLogic XTTS v2`, or starting NVDA with it, does not wait for the model. NVDA lists the installed voices at once and plays a short "Loading X T T S" announcement. Every 10 seconds while it is still loading, "Still loading, please wait" plays. Speech sent while the model loads waits, and "X T T S is ready" plays before it starts. Turn these sounds off or replace them on the Loading Sounds page of the voice manager.
 
 XTTS is still a large neural voice-cloning model, so uncached text needs the model, unlike classic screen-reader synths. With the pinned helper runtime on an NVIDIA GPU, it generates speech about three times faster than it plays, streams it as it is generated, and serves repeated UI text from the persistent speech cache. If a different helper runtime does not report streaming support, the add-on falls back to full-buffer synthesis.
 
@@ -114,7 +114,7 @@ Tabs:
 - `Browse Voices`: Hugging Face search, official downloadable profiles, and curated community profiles
 - `Extract Sample`: load a long recording, set markers, preview the selection, and save it as an XTTS profile
 - `Speech Cache`: cache settings, stats, clear, and compact actions
-- `Loading Sounds`: turn the sounds for XTTS starting to load and being ready on or off, or choose other WAV files for them
+- `Loading Sounds`: turn the sounds for XTTS starting to load, still loading and being ready on or off, choose other WAV files for them, and set how often the still loading sound repeats (3 to 120 seconds, 10 by default)
 
 Browse Voices:
 

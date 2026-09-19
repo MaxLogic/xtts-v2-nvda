@@ -41,6 +41,8 @@ from synthDrivers.maxlogic_xtts_v2._helper_client import HelperEngineClient
 from synthDrivers.maxlogic_xtts_v2._loading_sounds import (
 	LOADING as LOADING_SOUND,
 	READY as READY_SOUND,
+	WAITING as WAITING_SOUND,
+	WAITING_INTERVAL_RANGE,
 	default_sound_path,
 	is_playable_wave,
 	load_sound_settings,
@@ -1319,6 +1321,8 @@ __all__ = [
 	"CACHE_MODE_OPTIONS",
 	"LOADING_SOUND",
 	"READY_SOUND",
+	"WAITING_SOUND",
+	"WAITING_INTERVAL_RANGE",
 	"default_sound_path",
 	"is_playable_wave",
 	"load_sound_settings",

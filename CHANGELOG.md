@@ -3,7 +3,7 @@
 ## Unreleased
 
 - XTTS speaks about three times faster on an NVIDIA GPU: each decoding step replays as one CUDA graph instead of about 700 separate GPU calls. Uncached speech starts after about 0.26 s instead of 0.7 s and no longer stutters. It picks exactly the tokens Coqui's own decoding picks. Set `MAXLOGIC_XTTS_V2_CUDA_GRAPH=0` to turn it off; if the graph fails, XTTS falls back to Coqui's decoding by itself.
-- A voice says "Loading X T T S" when XTTS starts loading and "X T T S is ready" when it can speak. Speech waits until the second sound ends. The new Loading Sounds tab in the voice manager turns each sound off or replaces it with another WAV file.
+- A voice says "Loading X T T S" when XTTS starts loading, "Still loading, please wait" every 10 seconds while it loads, and "X T T S is ready" when it can speak. Speech waits until the ready sound ends. The new Loading Sounds tab in the voice manager turns each sound off, replaces it with another WAV file, and sets how often the still loading sound repeats.
 - Selecting XTTS, or starting NVDA with it, no longer freezes NVDA while the model loads (35 to 60 s). Speech starts once the model is ready.
 - A long line no longer stops after its first words. The rest used to play only once it was synthesized in full, which takes several seconds; now it plays as the helper streams it. Set `MAXLOGIC_XTTS_V2_LIVE_STREAM_PLAYBACK=0` to go back to whole chunks.
 - Text goes to XTTS in whole sentences, as many as fit under its limit for the language (80% of it, 200 characters for English), instead of a few words followed by the rest. Each extra request cost a short silence, and the split broke the sentence melody.

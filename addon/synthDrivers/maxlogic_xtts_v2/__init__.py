@@ -16,7 +16,7 @@ from speech.commands import BreakCommand, IndexCommand, LangChangeCommand, RateC
 from synthDriverHandler import VoiceInfo, synthDoneSpeaking, synthIndexReached
 
 
-from ._loading_sounds import LOADING, READY, play_loading_sound
+from ._loading_sounds import LoadingAnnouncer, play_loading_sound
 
 
 PACKAGE_ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -130,18 +130,22 @@ class SynthDriver(synthDriverHandler.SynthDriver):
 		return _load_engine_class()(PACKAGE_ROOT)
 
 	def _announce_loading(self):
-		"""Play the loading sound now and the ready sound once the model has loaded."""
-		play_loading_sound(LOADING, logger=log)
+		"""Announce the loading now and again every few seconds, and the ready state once the model has loaded."""
+		# Looked up on each call, so tests can replace play_loading_sound.
+		self._loading_announcer = LoadingAnnouncer(play=lambda kind, **kwargs: play_loading_sound(kind, **kwargs), logger=log)
+		self._loading_announcer.start()
 		call_when_ready = getattr(self._engine, "call_when_ready", None)
 		if call_when_ready is not None and not call_when_ready(self._announce_ready):
 			# It became ready in the meantime.
-			play_loading_sound(READY, logger=log)
+			self._loading_announcer.finish(wait=False)
 
 	def _announce_ready(self):
 		# This can run before __init__ has set _terminated.
-		if not getattr(self, "_terminated", False):
-			# Waiting holds back speech until the sound has finished, so the two do not overlap.
-			play_loading_sound(READY, wait=True, logger=log)
+		if getattr(self, "_terminated", False):
+			self._loading_announcer.stop()
+			return
+		# Waiting holds back speech until the sound has finished, so the two do not overlap.
+		self._loading_announcer.finish()
 
 	def _load_voices_from_store(self):
 		"""List voices the way the helper does, without the helper."""
@@ -227,6 +231,9 @@ class SynthDriver(synthDriverHandler.SynthDriver):
 
 	def terminate(self):
 		self._terminated = True
+		announcer = getattr(self, "_loading_announcer", None)
+		if announcer is not None:
+			announcer.stop(wait=False)
 		self.cancel()
 		self._interrupt_engine(reason="terminate", min_active_ms=0)
 		self._queue.put(None)

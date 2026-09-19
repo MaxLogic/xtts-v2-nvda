@@ -222,6 +222,25 @@ class SynthSelectionTests(unittest.TestCase):
         # Speech waits for the ready sound, so the two never overlap.
         self.assertEqual(played, [("loading", False), ("ready", True)])
 
+    def test_a_waiting_sound_repeats_until_ready_and_stops_when_the_synth_is_switched_away(self):
+        import functools
+        module, handler, patcher = load_driver()
+        self.addCleanup(patcher.stop)
+        self.addCleanup(sys.modules.pop, "maxlogic_xtts_v2_under_test", None)
+        played = []
+        engine = _LoadingHelper()
+        self.addCleanup(engine.loaded.set)
+        fast = functools.partial(module.LoadingAnnouncer, interval=0.05)
+        with patch.object(module, "play_loading_sound", lambda kind, wait=False, logger=None: played.append(kind)),                 patch.object(module, "LoadingAnnouncer", fast),                 patch.object(module.SynthDriver, "_create_engine", lambda driver: engine):
+            driver = module.SynthDriver()
+            time.sleep(0.3)
+            self.assertGreaterEqual(played.count("waiting"), 3, "no repeated waiting sound while loading")
+            driver.terminate()
+            heard = len(played)
+            time.sleep(0.2)
+        self.assertEqual(len(played), heard, "waiting sounds went on after the synth was switched away")
+        self.assertNotIn("ready", played)
+
     def test_no_sound_when_the_engine_is_ready_at_once(self):
         module, handler, patcher = load_driver()
         self.addCleanup(patcher.stop)

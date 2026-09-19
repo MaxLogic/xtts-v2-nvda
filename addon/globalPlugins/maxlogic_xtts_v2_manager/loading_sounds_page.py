@@ -21,12 +21,14 @@ class LoadingSoundsPanel(wx.Panel):
 		self._controls = {}
 		main_sizer = wx.BoxSizer(wx.VERTICAL)
 		main_sizer.Add(wx.StaticText(self, label=_(
-			"{product} takes a while to load. These sounds tell you when it starts loading and when it can speak. "
+			"{product} takes a while to load. These sounds tell you when it starts loading, that it is still loading, and when it can speak. "
 			"Changes apply the next time {product} loads."
 		).format(product=PRODUCT)), 0, wx.ALL, 5)
 		sounds = (
 			(service.LOADING_SOUND, _("Loading sound"), _("Play a sound when {product} starts &loading"),
 				_("&Choose file..."), _("Use &default sound"), _("&Play")),
+			(service.WAITING_SOUND, _("Still loading sound"), _("Repeat a sound &while {product} is still loading"),
+				_("Ch&oose file..."), _("Use defa&ult sound"), _("Pl&ay")),
 			(service.READY_SOUND, _("Ready sound"), _("Play a sound when {product} is &ready"),
 				_("C&hoose file..."), _("Use d&efault sound"), _("Pla&y")),
 		)
@@ -48,6 +50,15 @@ class LoadingSoundsPanel(wx.Panel):
 			for button in (choose_button, default_button, play_button):
 				buttons.Add(button, 0, wx.ALL, 5)
 			box.Add(buttons, 0)
+			if kind == service.WAITING_SOUND:
+				interval_row = wx.BoxSizer(wx.HORIZONTAL)
+				interval_row.Add(wx.StaticText(box_parent, label=_("Repeat e&very (seconds)")), 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 8)
+				low, high = service.WAITING_INTERVAL_RANGE
+				self.interval_ctrl = wx.SpinCtrl(box_parent, min=low, max=high, initial=self._settings[kind]["intervalSeconds"])
+				self.interval_ctrl.SetName(_("Repeat every (seconds)"))
+				interval_row.Add(self.interval_ctrl, 0)
+				box.Add(interval_row, 0, wx.ALL, 5)
+				self.interval_ctrl.Bind(wx.EVT_SPINCTRL, lambda event: self.on_interval())
 			main_sizer.Add(box, 0, wx.EXPAND | wx.ALL, 5)
 			self._controls[kind] = (title, checkbox, file_text, default_button)
 			checkbox.Bind(wx.EVT_CHECKBOX, lambda event, kind=kind: self.on_toggle(kind))
@@ -69,6 +80,8 @@ class LoadingSoundsPanel(wx.Panel):
 		else:
 			file_text.ChangeValue(_("The sound that comes with the add-on"))
 		default_button.Enable(bool(entry["path"]))
+		if kind == service.WAITING_SOUND:
+			self.interval_ctrl.SetValue(entry["intervalSeconds"])
 
 	def _save(self, kind, message):
 		try:
@@ -90,6 +103,11 @@ class LoadingSoundsPanel(wx.Panel):
 			self._save(kind, _("{sound} on.").format(sound=title))
 		else:
 			self._save(kind, _("{sound} off.").format(sound=title))
+
+	def on_interval(self):
+		seconds = self.interval_ctrl.GetValue()
+		self._settings[service.WAITING_SOUND]["intervalSeconds"] = seconds
+		self._save(service.WAITING_SOUND, _("Still loading sound repeats every {seconds} seconds.").format(seconds=seconds))
 
 	def on_choose(self, kind):
 		title = self._controls[kind][0]
