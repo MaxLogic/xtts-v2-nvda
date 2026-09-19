@@ -176,6 +176,14 @@ Opening the manager starts loading XTTS in a background thread if its preview he
 
 Installed-voice previews are cached as complete WAV files under `%APPDATA%\nvda\maxlogicXTTSv2\cache\preview-wav`. A replay with the same voice files, sample text, and language uses that file without starting the speech model. Changing the voice files or preview language produces a new cache entry. The first uncached preview still needs to load the XTTS model; after startup it streams audio as it becomes available. If playback is stopped, generation may finish in the background to complete the cached sample.
 
+## Licenses
+
+The add-on code is released under the MIT License. See `LICENSE`.
+
+The XTTS v2 model is not part of the add-on package. The helper downloads it from Coqui on first use. It is released under the [Coqui Public Model License](https://huggingface.co/coqui/XTTS-v2/blob/main/LICENSE.txt), which allows **non-commercial use only**. The helper accepts that license for you when it downloads the model, so installing and using this add-on means you agree to it. Do not use XTTS voices from this add-on for commercial purposes.
+
+Python packages, voice samples and catalog sources are listed in `THIRD-PARTY-NOTICES.md`.
+
 ## Add-on identity
 
 - Add-on ID: `maxlogicXTTSv2`

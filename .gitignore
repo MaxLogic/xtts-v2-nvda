@@ -6,6 +6,8 @@ dist/
 .agents/
 .helper-venv/
 *.nvda-addon
+# Add-on store metadata written by scons next to each package.
+/[0-9]*.[0-9]*.[0-9]*.json
 
 # Standalone runtime assets can be bootstrapped locally when needed.
 addon/synthDrivers/maxlogic_xtts_v2/deps/*

@@ -9,7 +9,8 @@ Runtime dependencies and model assets may be installed or downloaded separately:
   - License: MPL-2.0
 - XTTS v2 model family
   - Source: https://docs.coqui.ai/en/dev/models/xtts.html
-  - Model license: Coqui Public Model License
+  - Model license: Coqui Public Model License (https://huggingface.co/coqui/XTTS-v2/blob/main/LICENSE.txt), non-commercial use only
+  - Not bundled: the helper downloads the model on first use and accepts the license on the user's behalf
 - OHF Voice bundled and catalog voice samples
   - Source: https://github.com/OHF-Voice/voice-datasets
   - License: CC0-1.0

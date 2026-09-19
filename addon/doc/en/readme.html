@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
 <link rel="stylesheet" type="text/css" href="../style.css" media="screen">
-<title>MaxLogic XTTS v2 0.1.7</title>
+<title>MaxLogic XTTS v2 0.2.0</title>
 </head>
 <body>
 <h1 id="maxlogic-xtts-v2-for-nvda">MaxLogic XTTS v2 for NVDA</h1>
@@ -182,6 +182,10 @@
 <p>The <strong>Page status</strong> field reports loading for the selected tab. NVDA announces loading and completion while the manager is active.</p>
 <p>Opening the manager starts loading XTTS in a background thread if its preview helper is not already running. You can select recordings while it loads and close the manager without waiting for startup. The loaded helper remains available for later cloning and synthesis until NVDA exits. Background loading does not generate a test sentence.</p>
 <p>Installed-voice previews are cached as complete WAV files under <code>%APPDATA%\nvda\maxlogicXTTSv2\cache\preview-wav</code>. A replay with the same voice files, sample text, and language uses that file without starting the speech model. Changing the voice files or preview language produces a new cache entry. The first uncached preview still needs to load the XTTS model; after startup it streams audio as it becomes available. If playback is stopped, generation may finish in the background to complete the cached sample.</p>
+<h2 id="licenses">Licenses</h2>
+<p>The add-on code is released under the MIT License. See <code>LICENSE</code>.</p>
+<p>The XTTS v2 model is not part of the add-on package. The helper downloads it from Coqui on first use. It is released under the <a href="https://huggingface.co/coqui/XTTS-v2/blob/main/LICENSE.txt">Coqui Public Model License</a>, which allows <strong>non-commercial use only</strong>. The helper accepts that license for you when it downloads the model, so installing and using this add-on means you agree to it. Do not use XTTS voices from this add-on for commercial purposes.</p>
+<p>Python packages, voice samples and catalog sources are listed in <code>THIRD-PARTY-NOTICES.md</code>.</p>
 <h2 id="add-on-identity">Add-on identity</h2>
 <ul>
 <li>Add-on ID: <code>maxlogicXTTSv2</code></li>
