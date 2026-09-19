@@ -1,6 +1,7 @@
 import hashlib
 import json
 import importlib.metadata
+import itertools
 import os
 import shutil
 import sys
@@ -133,6 +134,12 @@ LANGUAGE_NORMALIZATION = {
 }
 
 
+def cuda_graph_decoding_enabled(use_gpu):
+	"""Decode with a CUDA graph on the GPU unless MAXLOGIC_XTTS_V2_CUDA_GRAPH turns it off."""
+	preference = os.environ.get("MAXLOGIC_XTTS_V2_CUDA_GRAPH", "").strip().lower()
+	return bool(use_gpu) and preference not in ("0", "false", "no", "off")
+
+
 def _resolve_asset_root(package_root):
 	override_root = os.environ.get("MAXLOGIC_XTTS_V2_ASSET_ROOT")
 	roots = [package_root]
@@ -156,6 +163,7 @@ class XTTSV2Engine(object):
 		).strip() or "tts_models/multilingual/multi-dataset/xtts_v2"
 		self.use_gpu = self._should_use_gpu()
 		self.tts = TTS(self.model_name, gpu=self.use_gpu)
+		self._install_fast_decoding()
 		self.voice_cache_dir = os.path.join(get_cache_dir(create=True), "voice-conditioning")
 		os.makedirs(self.voice_cache_dir, exist_ok=True)
 		self._voice_conditioning = {}
@@ -170,6 +178,39 @@ class XTTSV2Engine(object):
 			self.current_voice,
 			len(self.voice_records),
 		)
+
+	def _install_fast_decoding(self):
+		gpt = self.tts.synthesizer.tts_model.gpt
+		self.coqui_get_generator = gpt.get_generator
+		self.fast_decoding = None
+		if cuda_graph_decoding_enabled(self.use_gpu):
+			try:
+				try:
+					from ._fast_gpt import StaticGPTGenerator
+				except ImportError:
+					from _fast_gpt import StaticGPTGenerator
+				self.fast_decoding = StaticGPTGenerator(gpt)
+			except Exception:
+				log.warning("MaxLogic XTTS v2 CUDA graph decoding unavailable", exc_info=True)
+		gpt.get_generator = self.fast_get_generator
+		log.info("MaxLogic XTTS v2 decoding with %s.", "a CUDA graph" if self.fast_decoding else "Coqui's generate()")
+
+	def fast_get_generator(self, fake_inputs, **kwargs):
+		"""GPT.get_generator with a CUDA graph. Falls back to Coqui's for good if the graph fails."""
+		fast = self.fast_decoding
+		if fast is None:
+			return self.coqui_get_generator(fake_inputs, **kwargs)
+		try:
+			generator = fast.get_generator(fake_inputs, **kwargs)
+			# The prompt and the graph recording run before the first token, so their errors surface here.
+			first = next(generator)
+		except StopIteration:
+			return iter(())
+		except Exception:
+			log.warning("MaxLogic XTTS v2 CUDA graph decoding failed; using Coqui's generate() from now on", exc_info=True)
+			self.fast_decoding = None
+			return self.coqui_get_generator(fake_inputs, **kwargs)
+		return itertools.chain([first], generator)
 
 	@classmethod
 	def check_runtime_requirements(cls, package_root):
