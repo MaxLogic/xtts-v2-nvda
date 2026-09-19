@@ -9,7 +9,7 @@ It is based on the `kokoro-tts-nvda` project structure, but the speech runtime i
 - Separate NVDA synth: `MaxLogic XTTS v2`
 - One-click runtime setup from the voice manager
 - Built-in voice manager available from the NVDA menu
-- Installed, Clone Voice, Browse Voices, Extract Sample, and Speech Cache tabs
+- Installed, Clone Voice, Browse Voices, Extract Sample, Speech Cache, and Loading Sounds tabs
 - Five bundled CC0 starter voices
 - Curated on-demand voice downloads from legal upstream sources
 - Unified voice browser for Hugging Face search, official profiles, and community profiles
@@ -77,6 +77,7 @@ Tabs:
 - `Browse Voices`: Hugging Face search, official downloadable profiles, and curated community profiles
 - `Extract Sample`: load a long recording, set markers, preview the selection, and save it as an XTTS profile
 - `Speech Cache`: cache settings, stats, clear, and compact actions
+- `Loading Sounds`: turn the sounds for XTTS starting to load and being ready on or off, or choose other WAV files for them
 
 Browse Voices:
 

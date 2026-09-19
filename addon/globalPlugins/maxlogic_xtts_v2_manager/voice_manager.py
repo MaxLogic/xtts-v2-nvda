@@ -18,6 +18,7 @@ except Exception:
 
 from . import service
 from .clone_voice import CloneVoicePanel
+from .loading_sounds_page import LoadingSoundsPanel
 from ._ui import ButtonBusy, DeferredPanel, StatusText, load_async, remember_focus, report_loading, restore_focus, run_busy
 
 
@@ -3061,12 +3062,14 @@ class MaxLogicVoiceManagerDialog(wx.Dialog):
 		self.browse_panel = DeferredPanel(self.notebook, lambda parent: BrowseVoicesPanel(parent, on_change=self.refresh_all))
 		self.extract_panel = DeferredPanel(self.notebook, lambda parent: ExtractSamplePanel(parent, on_change=self.refresh_all))
 		self.cache_panel = DeferredPanel(self.notebook, SpeechCachePanel)
+		self.sounds_panel = DeferredPanel(self.notebook, LoadingSoundsPanel)
 		self.notebook.AddPage(self.installed_panel, _("Installed"))
 		self.clone_panel = DeferredPanel(self.notebook, lambda parent: CloneVoicePanel(parent, on_change=self.refresh_all))
 		self.notebook.AddPage(self.clone_panel, _("Clone Voice"))
 		self.notebook.AddPage(self.browse_panel, _("Browse Voices"))
 		self.notebook.AddPage(self.extract_panel, _("Extract Sample"))
 		self.notebook.AddPage(self.cache_panel, _("Speech Cache"))
+		self.notebook.AddPage(self.sounds_panel, _("Loading Sounds"))
 		self.notebook.Bind(wx.EVT_NOTEBOOK_PAGE_CHANGED, self.on_page_changed)
 		self.Bind(wx.EVT_CLOSE, self.on_close)
 		main_sizer.Add(self.notebook, 1, wx.EXPAND | wx.LEFT | wx.RIGHT, 10)

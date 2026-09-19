@@ -38,6 +38,14 @@ from synthDrivers.maxlogic_xtts_v2._cache_settings import (
 	save_cache_settings,
 )
 from synthDrivers.maxlogic_xtts_v2._helper_client import HelperEngineClient
+from synthDrivers.maxlogic_xtts_v2._loading_sounds import (
+	LOADING as LOADING_SOUND,
+	READY as READY_SOUND,
+	default_sound_path,
+	is_playable_wave,
+	load_sound_settings,
+	save_sound_settings,
+)
 from synthDrivers.maxlogic_xtts_v2._paths import get_cache_dir, get_temp_dir
 from synthDrivers.maxlogic_xtts_v2._voice_store import (
 	DuplicateVoiceError,
@@ -1309,6 +1317,12 @@ def compact_speech_cache():
 
 __all__ = [
 	"CACHE_MODE_OPTIONS",
+	"LOADING_SOUND",
+	"READY_SOUND",
+	"default_sound_path",
+	"is_playable_wave",
+	"load_sound_settings",
+	"save_sound_settings",
 	"DuplicateVoiceError",
 	"VoiceStoreError",
 	"clear_speech_cache",
