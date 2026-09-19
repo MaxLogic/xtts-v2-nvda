@@ -6,10 +6,11 @@
 <title>MaxLogic XTTS v2 0.1.7</title>
 </head>
 <body>
-<h1>MaxLogic XTTS v2 for NVDA</h1>
+<h1 id="maxlogic-xtts-v2-for-nvda">MaxLogic XTTS v2 for NVDA</h1>
 <p>MaxLogic XTTS v2 is an NVDA add-on that adds a separate XTTS v2 speech synthesizer under the name <code>MaxLogic XTTS v2</code>.</p>
 <p>It is based on the <code>kokoro-tts-nvda</code> project structure, but the speech runtime is swapped to Coqui XTTS v2 and voice management is centered around XTTS reference-audio profiles instead of Kokoro embeddings.</p>
-<h2>Features</h2>
+<p>This is a high-performance XTTS v2 implementation. On an NVIDIA GPU it generates speech about three times faster than stock Coqui XTTS, and new text starts to speak after about a quarter of a second. It picks exactly the same audio tokens as Coqui, so voices sound the same. See <a href="#performance">Performance</a> for how it gets there.</p>
+<h2 id="features">Features</h2>
 <ul>
 <li>Separate NVDA synth: <code>MaxLogic XTTS v2</code></li>
 <li>One-click runtime setup from the voice manager</li>
@@ -26,11 +27,64 @@
 <li>Save the current marked snippet or preserve the edited working copy as a separate audio file</li>
 <li>Keyboard shortcuts for Extract Sample transport, markers, preview, deletion, and saving</li>
 <li>User-managed voice profiles stored outside the add-on so they survive reinstalls</li>
-<li>Persistent short-speech cache and short-lived paragraph hot cache</li>
-<li>Streamed uncached XTTS speech when the helper runtime supports it</li>
-<li>Safer text chunking for long passages</li>
+<li>About three times faster than stock Coqui XTTS on an NVIDIA GPU: each decoding step replays as one CUDA graph</li>
+<li>Speech streams as it is generated: new text starts after about 0.26 s and plays without gaps</li>
+<li>Text is sent in whole sentences, within XTTS's own length limit for each language</li>
+<li>Say-all without pauses between lines; the next sentence is synthesized while the current one plays</li>
+<li>Selecting the synth never freezes NVDA: the model loads in the background</li>
+<li>Spoken announcements when XTTS starts loading and when it is ready, each one optional and replaceable</li>
+<li>Persistent short-speech cache, short-lived paragraph hot cache, and cached voice conditioning</li>
 </ul>
-<h2>Runtime model</h2>
+<h2 id="performance">Performance</h2>
+<p>Measured with a cloned voice on an RTX 3090 under Windows 11 (September 2026):</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>Stock Coqui XTTS</th>
+<th>This add-on</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Time per audio token</td>
+<td>36 ms</td>
+<td>12 ms</td>
+</tr>
+<tr>
+<td>Generation time per second of speech</td>
+<td>0.8 to 0.9 s</td>
+<td>0.28 s</td>
+</tr>
+<tr>
+<td>First audio of new text</td>
+<td>about 0.7 s</td>
+<td>about 0.26 s</td>
+</tr>
+<tr>
+<td>Gaps while a long sentence plays</td>
+<td>some</td>
+<td>none</td>
+</tr>
+</tbody>
+</table>
+<p>How it gets there:</p>
+<ul>
+<li><strong>CUDA graph decoding.</strong> Stock XTTS decodes through Hugging Face <code>generate()</code>, which sends about 700 small jobs to the GPU for every audio token. On Windows that overhead, not the GPU, sets the speed: the GPU stays about 9% busy. The helper records one decoding step once as a CUDA graph and replays it for every token. Sampling follows Coqui's rules in the same order, and tests confirm it picks the same tokens as Coqui. If the graph ever fails, the helper switches back to Coqui's decoding by itself.</li>
+<li><strong>One helper process that stays loaded.</strong> The model loads once, in a separate helper process, and serves every utterance. Loading takes 35 to 60 s and happens in the background, so NVDA stays responsive.</li>
+<li><strong>Streaming.</strong> Audio plays as each piece, about 0.9 s of speech, is generated. The end of each line is reported to NVDA one second before its audio ends, so say-all prepares the next line while the current one finishes.</li>
+<li><strong>Whole sentences.</strong> Text goes to XTTS in whole sentences, packed up to 80% of its limit for the language (200 characters for English). Fewer requests mean fewer waits and a natural sentence melody.</li>
+<li><strong>Caches.</strong> Short, repeated phrases come from a persistent cache without running the model. Recently spoken paragraphs come from a short-lived memory cache. Voice conditioning is computed once per voice and stored.</li>
+<li><strong>Early cancellation.</strong> When you interrupt speech, the helper stops generating the old text instead of finishing it.</li>
+</ul>
+<p>Without an NVIDIA GPU, XTTS runs on the CPU, without CUDA graphs, and is much slower. Cached phrases stay instant.</p>
+<p>Environment variables for troubleshooting, read when NVDA starts:</p>
+<ul>
+<li><code>MAXLOGIC_XTTS_V2_CUDA_GRAPH=0</code> decodes the stock way instead of with a CUDA graph.</li>
+<li><code>MAXLOGIC_XTTS_V2_LIVE_STREAM_PLAYBACK=0</code> waits for each whole chunk before playing it.</li>
+<li><code>MAXLOGIC_XTTS_V2_GPU=cpu</code> runs XTTS on the CPU.</li>
+</ul>
+<h2 id="runtime-model">Runtime model</h2>
 <p>The add-on is helper-first. The recommended setup is:</p>
 <ol>
 <li>Install the add-on normally. The installer bootstraps the helper runtime automatically.</li>
@@ -41,8 +95,9 @@
 <p>The bootstrap script installs Python packages pinned for the tested XTTS streaming stack: <code>coqui-tts==0.27.5</code>, <code>transformers==4.57.6</code>, <code>torchcodec==0.16.0</code>, <code>numpy&lt;2</code>, and PyTorch/Torchaudio 2.11.0 for the selected provider. Auto setup prefers Python 3.11 when available because that is the tested environment.</p>
 <p>By default the helper uses the Coqui model name <code>tts_models/multilingual/multi-dataset/xtts_v2</code>.</p>
 <p>Normal NVDA speech cancellation stops current audio without restarting the XTTS helper. This keeps the warmed CUDA runtime available for the next utterance; the helper is closed when the synth is terminated or NVDA switches away from it.</p>
-<p>XTTS is still a large neural voice-cloning model, so uncached text is much slower than classic screen-reader synths. With the pinned helper runtime, the driver streams generated audio chunks as they become available, then relies on the persistent speech cache for repeated UI text. If a different helper runtime does not report streaming support, the add-on falls back to full-buffer synthesis.</p>
-<h2>Voice profiles</h2>
+<p>Selecting <code>MaxLogic XTTS v2</code>, or starting NVDA with it, does not wait for the model. NVDA lists the installed voices at once and plays a short "Loading X T T S" announcement. Speech sent while the model loads waits, and "X T T S is ready" plays before it starts. Turn these sounds off or replace them on the Loading Sounds page of the voice manager.</p>
+<p>XTTS is still a large neural voice-cloning model, so uncached text needs the model, unlike classic screen-reader synths. With the pinned helper runtime on an NVIDIA GPU, it generates speech about three times faster than it plays, streams it as it is generated, and serves repeated UI text from the persistent speech cache. If a different helper runtime does not report streaming support, the add-on falls back to full-buffer synthesis.</p>
+<h2 id="voice-profiles">Voice profiles</h2>
 <p>XTTS v2 clones from reference audio. In this add-on, a "voice" is a profile that contains one or more reference audio files, or an XTTS conditioning <code>.pth</code>, plus profile metadata.</p>
 <p>The add-on bundles these small CC0 starter voices:</p>
 <ul>
@@ -60,9 +115,10 @@
 <ul>
 <li>Cache settings: <code>%APPDATA%\nvda\maxlogicXTTSv2\speech-cache-settings.json</code></li>
 <li>Persistent cache database: <code>%APPDATA%\nvda\maxlogicXTTSv2\cache\speech-cache.sqlite3</code></li>
+<li>Loading sound settings: <code>%APPDATA%\nvda\maxlogicXTTSv2\loading-sounds.json</code></li>
 <li>Helper log: <code>%APPDATA%\nvda\maxlogicXTTSv2\logs\helper.log</code></li>
 </ul>
-<h2>Voice manager</h2>
+<h2 id="voice-manager">Voice manager</h2>
 <p>Open:</p>
 <ul>
 <li><code>NVDA menu -&gt; MaxLogic XTTS v2 voice manager...</code></li>
@@ -105,37 +161,38 @@
 <li>Use <code>Save current snippet as audio</code> to export the selected range as a <code>.wav</code>, or <code>Save edited audio as...</code> after deleting snippets to preserve the modified WAV working copy</li>
 <li>Keyboard shortcuts: <code>Ctrl+O</code> browse, <code>Ctrl+P</code> play or pause, <code>Ctrl+K</code> stop, <code>Ctrl+Left</code>/<code>Ctrl+Right</code> move 5 seconds, <code>Ctrl+Shift+Left</code>/<code>Ctrl+Shift+Right</code> move 30 seconds, <code>Ctrl+1</code> set start, <code>Ctrl+2</code> set end, <code>Ctrl+R</code> preview selection, <code>Ctrl+D</code> delete snippet, <code>Ctrl+E</code> save current snippet, <code>Ctrl+M</code> save edited audio, and <code>Ctrl+S</code> save profile</li>
 </ul>
-<h2>Supported languages</h2>
+<h2 id="supported-languages">Supported languages</h2>
 <p>The bundled XTTS v2 integration normalizes NVDA language tags to the language set documented by Coqui XTTS v2:</p>
 <ul>
 <li><code>ar</code>, <code>cs</code>, <code>de</code>, <code>en</code>, <code>es</code>, <code>fr</code>, <code>hu</code>, <code>it</code>, <code>ja</code>, <code>ko</code>, <code>nl</code>, <code>pl</code>, <code>pt</code>, <code>ru</code>, <code>tr</code>, <code>zh-cn</code></li>
 </ul>
-<h2>Notes</h2>
+<h2 id="notes">Notes</h2>
 <ul>
 <li>This repository does not bundle the large XTTS model payload by default.</li>
 <li>The helper environment is pinned to the tested Coqui/PyTorch stack because newer Coqui releases were slower to first audio in local testing and the current <code>inference_stream</code> path hung.</li>
 <li>The Browse Voices tab consolidates Hugging Face search, the official catalog, and the community catalog under one source selector.</li>
 <li>The add-on can be managed from NVDA even when the synth itself is unavailable because the helper environment or voice profiles have not been installed yet.</li>
 </ul>
-<h2>Keyboard navigation and feedback</h2>
+<h2 id="keyboard-navigation-and-feedback">Keyboard navigation and feedback</h2>
 <p>Use <code>Ctrl+Tab</code> and <code>Ctrl+Shift+Tab</code> to change tabs, then <code>Tab</code> and <code>Shift+Tab</code> to move between controls. Use arrow keys in lists and <code>Space</code> to check a voice for download. Button access keys are shown by Windows when you press <code>Alt</code>. <code>Escape</code>, <code>Ctrl+F4</code>, Close and the window X close the manager when no operation is running.</p>
 <p>Optional pages load when selected. Downloads, cache operations, and voice installation run in the background with progress feedback. Status and voice details are read-only text fields: focus them to review or copy their contents. The sample editor and cache page scroll to keep focused controls in view. Closing waits while an audio edit or save is running.</p>
-<h3>Installed voice previews</h3>
+<h3 id="installed-voice-previews">Installed voice previews</h3>
 <p>Select a voice in either installed-voice list and press <code>Ctrl+P</code> or <code>Alt+P</code> to play its sample. Press the shortcut again during playback to stop it. When playback finishes, focus returns to the same list, so you can select the next voice with an arrow key and press <code>Ctrl+P</code> again. Focus is not moved if you switched to another application or tab.</p>
 <p>Use <strong>Open voice folder</strong> (<code>Alt+O</code>) to open the selected profile's containing folder in File Explorer. This works for user-installed and packaged profiles.</p>
 <p>The <strong>Page status</strong> field reports loading for the selected tab. NVDA announces loading and completion while the manager is active.</p>
 <p>Opening the manager starts loading XTTS in a background thread if its preview helper is not already running. You can select recordings while it loads and close the manager without waiting for startup. The loaded helper remains available for later cloning and synthesis until NVDA exits. Background loading does not generate a test sentence.</p>
 <p>Installed-voice previews are cached as complete WAV files under <code>%APPDATA%\nvda\maxlogicXTTSv2\cache\preview-wav</code>. A replay with the same voice files, sample text, and language uses that file without starting the speech model. Changing the voice files or preview language produces a new cache entry. The first uncached preview still needs to load the XTTS model; after startup it streams audio as it becomes available. If playback is stopped, generation may finish in the background to complete the cached sample.</p>
-<h2>Add-on identity</h2>
+<h2 id="add-on-identity">Add-on identity</h2>
 <ul>
 <li>Add-on ID: <code>maxlogicXTTSv2</code></li>
 <li>Synth driver: <code>maxlogic_xtts_v2</code></li>
 <li>Display name: <code>MaxLogic XTTS v2</code></li>
 </ul>
-<h2>NVDA compatibility and checks</h2>
+<h2 id="nvda-compatibility-and-checks">NVDA compatibility and checks</h2>
 <p>This release targets NVDA 2026.2. The minimum supported version is 2024.1.</p>
 <p>Run the repository checks with <code>python -m unittest discover -s tests -v</code>. Runtime synthesis and physical keyboard/speech checks are separate from these tests.</p>
-<h3>Clone Voice</h3>
+<p>The CUDA graph decoding test needs the real model and an NVIDIA GPU, so it runs only with the helper's Python: <code>.helper-venv\Scripts\python.exe -m unittest discover -s tests -p test_fast_gpt.py</code>. It checks that the graph picks the same tokens as Coqui in English and Polish.</p>
+<h3 id="clone-voice">Clone Voice</h3>
 <p>Open <strong>Clone Voice</strong>, add one or more clear recordings of the same speaker, and choose the default language and presets. Use <strong>Extract Sample</strong> first when a recording needs trimming. <strong>Clone for testing</strong> (Alt+C) prepares a temporary voice without asking for a name or adding anything to Installed.</p>
 <p>Use <strong>Sample text</strong> (Alt+T) to enter your own text, then <strong>Play sample</strong> (Alt+P). <strong>Reset to default text</strong> (Alt+D) restores the default for the selected language. Matching samples use the preview cache; new samples stream as they are generated.</p>
 <p>Choose <strong>Save voice</strong> (Alt+S) when you want to keep the result. Enter a name, then confirm replacement if that voice already exists. Cancelling keeps your test clone available. Saving reuses the prepared conditioning. Closing the manager discards temporary test files; saved voices remain installed.</p>
@@ -146,7 +203,7 @@
 <li><strong>Conditioning chunk seconds</strong> (default 6): chunk size within that conditioning audio; it must not exceed the total.</li>
 </ul>
 <p>Longer values do not guarantee better results. These settings affect voice conditioning; they are not speaking-speed or synthesis-temperature controls. Model startup can take tens of seconds. Cloning runs in a worker while a spinner appears on its button. NVDA announces completion using the current voice. The dialog grows to fit the cloning controls, including advanced settings. On a smaller screen, advanced settings open in a separate fitted dialog. After saving, the profile appears in Installed, where its folder can be opened.</p>
-<h3>Choosing recordings and presets</h3>
+<h3 id="choosing-recordings-and-presets">Choosing recordings and presets</h3>
 <p>Select one input in <strong>Reference recordings</strong>, then choose <strong>Play selected recording</strong> (Alt+I) to listen to the original audio. The same button stops playback. Input playback does not require the XTTS model and stops when you remove the recording, start a generated sample, or close the manager.</p>
 <p><strong>Balance speech style across all recordings</strong> (Alt+B, on by default) changes how the speech-style budget (Total conditioning seconds) is used. Stock XTTS joins the recordings and uses only the first seconds, so a short fragment listed first can take most of the budget and later recordings add no style. With balancing, each recording gets an equal share, taken from its middle; a recording shorter than its share passes the remainder to the others, and list order no longer matters. For example, with 12 seconds and recordings of 2.5 seconds, 19 minutes and 53 seconds, the shares are about 2.5, 4.8 and 4.8 seconds. Speaker identity is computed the same way in both modes. Clear this option to reproduce stock XTTS behavior.</p>
 <p><strong>Check recordings</strong> also reports how much of each file falls inside the speech-style conditioning window. Before cloning, a warning identifies recordings estimated to contribute no speech style and lets you return to the inputs or continue. These recordings still contribute to speaker identity. If edge trimming is enabled, the report is an estimate before trimming; shorter prepared inputs can allow later recordings into the window.</p>
@@ -154,13 +211,60 @@
 <p>Use clear recordings of one speaker with consistent sound and little edge silence. Roughly 6–15 seconds per clip is a starting point, not a quality guarantee. Several clean references may help, but more files are not automatically better than one good recording. Speaker embeddings are averaged; GPT conditioning uses the selected duration from joined recordings in list order. Optional edge trimming preserves original files, retains about 100 ms of margin and keeps internal pauses. It is off by default.</p>
 <p>Reference conditioning presets use maximum-reference / total-conditioning / chunk seconds: XTTS model config <strong>30 / 30 / 4</strong> (default), Function defaults <strong>30 / 6 / 6</strong>, Extended <strong>30 / 12 / 6</strong>, Longer <strong>30 / 30 / 6</strong>. The model config values come from the released XTTS v2 <code>config.json</code> and are what Coqui's high-level synthesis uses; the function defaults are the bare <code>get_conditioning_latents()</code> keyword defaults. XTTS has no hard length limit: each chunk becomes a fixed-size style summary and the summaries are averaged, so longer totals mainly add averaging and time. The model was trained on 3 to 6 second chunks. Advanced controls remain editable.</p>
 <p>Speech generation presets are separate and saved with each newly created voice:</p>
-<p>| Preset | Temperature | Top p | Top k | Repetition penalty | Speed |
-| --- | --- | --- | --- | --- | --- |
-| XTTS model config (default) | 0.75 | 0.85 | 50 | 5 | 1.0 |
-| XTTS inference function defaults | 0.75 | 0.85 | 50 | 10 | 1.0 |
-| Suggested range: midpoint | 0.75 | 0.85 | 50 | 2 | 1.0 |
-| Suggested range: lower | 0.65 | 0.80 | 50 | 2 | 1.0 |
-| Suggested range: upper | 0.85 | 0.90 | 50 | 2 | 1.0 |</p>
+<table>
+<thead>
+<tr>
+<th>Preset</th>
+<th>Temperature</th>
+<th>Top p</th>
+<th>Top k</th>
+<th>Repetition penalty</th>
+<th>Speed</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>XTTS model config (default)</td>
+<td>0.75</td>
+<td>0.85</td>
+<td>50</td>
+<td>5</td>
+<td>1.0</td>
+</tr>
+<tr>
+<td>XTTS inference function defaults</td>
+<td>0.75</td>
+<td>0.85</td>
+<td>50</td>
+<td>10</td>
+<td>1.0</td>
+</tr>
+<tr>
+<td>Suggested range: midpoint</td>
+<td>0.75</td>
+<td>0.85</td>
+<td>50</td>
+<td>2</td>
+<td>1.0</td>
+</tr>
+<tr>
+<td>Suggested range: lower</td>
+<td>0.65</td>
+<td>0.80</td>
+<td>50</td>
+<td>2</td>
+<td>1.0</td>
+</tr>
+<tr>
+<td>Suggested range: upper</td>
+<td>0.85</td>
+<td>0.90</td>
+<td>50</td>
+<td>2</td>
+<td>1.0</td>
+</tr>
+</tbody>
+</table>
 <p>These are starting points for listening comparisons, not ranked quality presets. Speed multiplies NVDA's rate. Settings affect both streamed and buffered synthesis. Changing controls does not edit an existing voice. Saved conditioning avoids recloning, but generating new text still needs the model; a matching preview WAV does not. Cache identities include profile files and speech settings.</p>
 <p>References checked: <a href="https://pypi.org/project/coqui-tts/">Coqui package</a>, <a href="https://github.com/idiap/coqui-ai-TTS/blob/v0.27.5/TTS/tts/models/xtts.py">XTTS 0.27.5 source</a>, <a href="https://coqui-tts.readthedocs.io/en/latest/cloning.html">voice caching</a>.</p>
 </body>

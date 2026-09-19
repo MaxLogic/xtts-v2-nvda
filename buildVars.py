@@ -34,4 +34,5 @@ excludedFiles = []
 
 baseLanguage = "en"
 
-markdownExtensions = []
+# Tables for the performance and preset tables; toc gives headings ids for in-page links.
+markdownExtensions = ["tables", "toc"]

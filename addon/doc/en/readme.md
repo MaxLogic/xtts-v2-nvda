@@ -4,6 +4,8 @@ MaxLogic XTTS v2 is an NVDA add-on that adds a separate XTTS v2 speech synthesiz
 
 It is based on the `kokoro-tts-nvda` project structure, but the speech runtime is swapped to Coqui XTTS v2 and voice management is centered around XTTS reference-audio profiles instead of Kokoro embeddings.
 
+This is a high-performance XTTS v2 implementation. On an NVIDIA GPU it generates speech about three times faster than stock Coqui XTTS, and new text starts to speak after about a quarter of a second. It picks exactly the same audio tokens as Coqui, so voices sound the same. See [Performance](#performance) for how it gets there.
+
 ## Features
 
 - Separate NVDA synth: `MaxLogic XTTS v2`
@@ -21,9 +23,41 @@ It is based on the `kokoro-tts-nvda` project structure, but the speech runtime i
 - Save the current marked snippet or preserve the edited working copy as a separate audio file
 - Keyboard shortcuts for Extract Sample transport, markers, preview, deletion, and saving
 - User-managed voice profiles stored outside the add-on so they survive reinstalls
-- Persistent short-speech cache and short-lived paragraph hot cache
-- Streamed uncached XTTS speech when the helper runtime supports it
-- Safer text chunking for long passages
+- About three times faster than stock Coqui XTTS on an NVIDIA GPU: each decoding step replays as one CUDA graph
+- Speech streams as it is generated: new text starts after about 0.26 s and plays without gaps
+- Text is sent in whole sentences, within XTTS's own length limit for each language
+- Say-all without pauses between lines; the next sentence is synthesized while the current one plays
+- Selecting the synth never freezes NVDA: the model loads in the background
+- Spoken announcements when XTTS starts loading and when it is ready, each one optional and replaceable
+- Persistent short-speech cache, short-lived paragraph hot cache, and cached voice conditioning
+
+## Performance
+
+Measured with a cloned voice on an RTX 3090 under Windows 11 (September 2026):
+
+| | Stock Coqui XTTS | This add-on |
+| --- | --- | --- |
+| Time per audio token | 36 ms | 12 ms |
+| Generation time per second of speech | 0.8 to 0.9 s | 0.28 s |
+| First audio of new text | about 0.7 s | about 0.26 s |
+| Gaps while a long sentence plays | some | none |
+
+How it gets there:
+
+- **CUDA graph decoding.** Stock XTTS decodes through Hugging Face `generate()`, which sends about 700 small jobs to the GPU for every audio token. On Windows that overhead, not the GPU, sets the speed: the GPU stays about 9% busy. The helper records one decoding step once as a CUDA graph and replays it for every token. Sampling follows Coqui's rules in the same order, and tests confirm it picks the same tokens as Coqui. If the graph ever fails, the helper switches back to Coqui's decoding by itself.
+- **One helper process that stays loaded.** The model loads once, in a separate helper process, and serves every utterance. Loading takes 35 to 60 s and happens in the background, so NVDA stays responsive.
+- **Streaming.** Audio plays as each piece, about 0.9 s of speech, is generated. The end of each line is reported to NVDA one second before its audio ends, so say-all prepares the next line while the current one finishes.
+- **Whole sentences.** Text goes to XTTS in whole sentences, packed up to 80% of its limit for the language (200 characters for English). Fewer requests mean fewer waits and a natural sentence melody.
+- **Caches.** Short, repeated phrases come from a persistent cache without running the model. Recently spoken paragraphs come from a short-lived memory cache. Voice conditioning is computed once per voice and stored.
+- **Early cancellation.** When you interrupt speech, the helper stops generating the old text instead of finishing it.
+
+Without an NVIDIA GPU, XTTS runs on the CPU, without CUDA graphs, and is much slower. Cached phrases stay instant.
+
+Environment variables for troubleshooting, read when NVDA starts:
+
+- `MAXLOGIC_XTTS_V2_CUDA_GRAPH=0` decodes the stock way instead of with a CUDA graph.
+- `MAXLOGIC_XTTS_V2_LIVE_STREAM_PLAYBACK=0` waits for each whole chunk before playing it.
+- `MAXLOGIC_XTTS_V2_GPU=cpu` runs XTTS on the CPU.
 
 ## Runtime model
 
@@ -40,7 +74,9 @@ By default the helper uses the Coqui model name `tts_models/multilingual/multi-d
 
 Normal NVDA speech cancellation stops current audio without restarting the XTTS helper. This keeps the warmed CUDA runtime available for the next utterance; the helper is closed when the synth is terminated or NVDA switches away from it.
 
-XTTS is still a large neural voice-cloning model, so uncached text is much slower than classic screen-reader synths. With the pinned helper runtime, the driver streams generated audio chunks as they become available, then relies on the persistent speech cache for repeated UI text. If a different helper runtime does not report streaming support, the add-on falls back to full-buffer synthesis.
+Selecting `MaxLogic XTTS v2`, or starting NVDA with it, does not wait for the model. NVDA lists the installed voices at once and plays a short "Loading X T T S" announcement. Speech sent while the model loads waits, and "X T T S is ready" plays before it starts. Turn these sounds off or replace them on the Loading Sounds page of the voice manager.
+
+XTTS is still a large neural voice-cloning model, so uncached text needs the model, unlike classic screen-reader synths. With the pinned helper runtime on an NVIDIA GPU, it generates speech about three times faster than it plays, streams it as it is generated, and serves repeated UI text from the persistent speech cache. If a different helper runtime does not report streaming support, the add-on falls back to full-buffer synthesis.
 
 ## Voice profiles
 
@@ -62,6 +98,7 @@ Speech cache and logs are also stored outside the add-on package:
 
 - Cache settings: `%APPDATA%\nvda\maxlogicXTTSv2\speech-cache-settings.json`
 - Persistent cache database: `%APPDATA%\nvda\maxlogicXTTSv2\cache\speech-cache.sqlite3`
+- Loading sound settings: `%APPDATA%\nvda\maxlogicXTTSv2\loading-sounds.json`
 - Helper log: `%APPDATA%\nvda\maxlogicXTTSv2\logs\helper.log`
 
 ## Voice manager
@@ -150,6 +187,8 @@ Installed-voice previews are cached as complete WAV files under `%APPDATA%\nvda\
 This release targets NVDA 2026.2. The minimum supported version is 2024.1.
 
 Run the repository checks with `python -m unittest discover -s tests -v`. Runtime synthesis and physical keyboard/speech checks are separate from these tests.
+
+The CUDA graph decoding test needs the real model and an NVIDIA GPU, so it runs only with the helper's Python: `.helper-venv\Scripts\python.exe -m unittest discover -s tests -p test_fast_gpt.py`. It checks that the graph picks the same tokens as Coqui in English and Polish.
 
 ### Clone Voice
 
