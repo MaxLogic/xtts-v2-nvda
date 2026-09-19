@@ -43,6 +43,7 @@ class HelperEngineClient(object):
 		self._skip_next_prewarm = bool(skip_prewarm)
 		self._closed = False
 		self._ready = threading.Event()
+		self._ready_callbacks = []
 		if wait_until_ready:
 			self._start(skip_prewarm=bool(skip_prewarm))
 		else:
@@ -52,7 +53,10 @@ class HelperEngineClient(object):
 
 	def _start_in_background(self, skip_prewarm):
 		try:
-			self._start(skip_prewarm=skip_prewarm)
+			with self._io_lock:
+				self._start_locked(skip_prewarm=skip_prewarm)
+				# Requests wait on _io_lock, so these run before any of them.
+				self._run_ready_callbacks()
 		except Exception as error:
 			if not self._closed:
 				self.logger.warning("MaxLogic XTTS v2 helper failed to start: %s", error)
@@ -60,6 +64,28 @@ class HelperEngineClient(object):
 	@property
 	def is_ready(self):
 		return self._ready.is_set()
+
+	def call_when_ready(self, callback):
+		"""Run callback once the helper has started in the background, before any request it held up.
+
+		Returns False, without running it, when the helper is ready already.
+		"""
+		with self._state_lock:
+			if self._ready.is_set():
+				return False
+			self._ready_callbacks.append(callback)
+			return True
+
+	def _run_ready_callbacks(self):
+		with self._state_lock:
+			callbacks, self._ready_callbacks = self._ready_callbacks, []
+		for callback in callbacks:
+			if self._closed:
+				return
+			try:
+				callback()
+			except Exception:
+				self.logger.warning("MaxLogic XTTS v2 helper ready callback failed", exc_info=True)
 
 	@classmethod
 	def should_try(cls, package_root):

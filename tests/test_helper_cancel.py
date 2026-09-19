@@ -159,6 +159,21 @@ class HelperBackgroundStartTests(unittest.TestCase):
         self.assertEqual(len(client.synthesize_to_int16("Early text.", voice="test")), 16)
         self.assertTrue(client.is_ready)
 
+    def test_the_ready_callback_runs_once_before_waiting_requests(self):
+        events = []
+        client = self.client_class(self.package_root, logging.getLogger("test"), skip_prewarm=True, wait_until_ready=False)
+        self.addCleanup(client.close)
+
+        def ready():
+            time.sleep(0.2)  # the ready sound plays
+            events.append("ready")
+
+        self.assertTrue(client.call_when_ready(ready))
+        client.synthesize_to_int16("Early text.", voice="test")
+        events.append("speech")
+        self.assertEqual(events, ["ready", "speech"])
+        self.assertFalse(client.call_when_ready(ready), "a callback registered after startup must not wait")
+
     def test_closing_during_startup_does_not_wait_or_leave_a_helper(self):
         client = self.client_class(self.package_root, logging.getLogger("test"), skip_prewarm=True, wait_until_ready=False)
         deadline = time.perf_counter() + 2

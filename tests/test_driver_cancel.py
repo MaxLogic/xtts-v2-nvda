@@ -183,6 +183,10 @@ class _LoadingHelper(_SlowEngine):
         self.loaded.wait(10)
         return "test"
 
+    def call_when_ready(self, callback):
+        self.on_ready = callback
+        return True
+
 
 class SynthSelectionTests(unittest.TestCase):
     def test_selecting_the_synth_does_not_wait_for_the_model(self):
@@ -201,6 +205,33 @@ class SynthSelectionTests(unittest.TestCase):
         from maxlogic_xtts_v2_under_test._voice_store import discover_voice_records
         records, __ = discover_voice_records(str(ROOT / "synthDrivers/maxlogic_xtts_v2"), [("package", str(ROOT / "synthDrivers/maxlogic_xtts_v2"))])
         self.assertEqual(sorted(driver.availableVoices), sorted(records))
+
+    def test_sounds_announce_the_model_loading_and_ready(self):
+        module, handler, patcher = load_driver()
+        self.addCleanup(patcher.stop)
+        self.addCleanup(sys.modules.pop, "maxlogic_xtts_v2_under_test", None)
+        played = []
+        engine = _LoadingHelper()
+        self.addCleanup(engine.loaded.set)
+        with patch.object(module, "play_loading_sound", lambda kind, wait=False, logger=None: played.append((kind, wait))),                 patch.object(module.SynthDriver, "_create_engine", lambda driver: engine):
+            driver = module.SynthDriver()
+            self.addCleanup(driver.terminate)
+            self.assertEqual(played, [("loading", False)])
+            engine.loaded.set()
+            engine.on_ready()
+        # Speech waits for the ready sound, so the two never overlap.
+        self.assertEqual(played, [("loading", False), ("ready", True)])
+
+    def test_no_sound_when_the_engine_is_ready_at_once(self):
+        module, handler, patcher = load_driver()
+        self.addCleanup(patcher.stop)
+        self.addCleanup(sys.modules.pop, "maxlogic_xtts_v2_under_test", None)
+        played = []
+        engine = _SlowEngine()
+        with patch.object(module, "play_loading_sound", lambda kind, wait=False, logger=None: played.append(kind)),                 patch.object(module.SynthDriver, "_create_engine", lambda driver: engine):
+            driver = module.SynthDriver()
+            self.addCleanup(driver.terminate)
+        self.assertEqual(played, [])
 
 
 if __name__ == "__main__":

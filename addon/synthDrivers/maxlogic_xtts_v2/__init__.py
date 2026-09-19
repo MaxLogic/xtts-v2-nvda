@@ -16,6 +16,9 @@ from speech.commands import BreakCommand, IndexCommand, LangChangeCommand, RateC
 from synthDriverHandler import VoiceInfo, synthDoneSpeaking, synthIndexReached
 
 
+from ._loading_sounds import LOADING, READY, play_loading_sound
+
+
 PACKAGE_ROOT = os.path.dirname(os.path.abspath(__file__))
 
 def _load_engine_class():
@@ -94,6 +97,7 @@ class SynthDriver(synthDriverHandler.SynthDriver):
 		else:
 			# The helper is still loading the model. Asking it for voices would freeze NVDA until it is done.
 			self._load_voices_from_store()
+			self._announce_loading()
 		self._queue = queue.Queue()
 		self._generation = 0
 		self._terminated = False
@@ -124,6 +128,19 @@ class SynthDriver(synthDriverHandler.SynthDriver):
 			except Exception as error:
 				log.warning("MaxLogic XTTS v2 helper unavailable, falling back to in-process engine: %s", error)
 		return _load_engine_class()(PACKAGE_ROOT)
+
+	def _announce_loading(self):
+		"""Play the loading sound now and the ready sound once the model has loaded."""
+		play_loading_sound(LOADING, logger=log)
+		call_when_ready = getattr(self._engine, "call_when_ready", None)
+		if call_when_ready is not None and not call_when_ready(self._announce_ready):
+			# It became ready in the meantime.
+			play_loading_sound(READY, logger=log)
+
+	def _announce_ready(self):
+		if not self._terminated:
+			# Waiting holds back speech until the sound has finished, so the two do not overlap.
+			play_loading_sound(READY, wait=True, logger=log)
 
 	def _load_voices_from_store(self):
 		"""List voices the way the helper does, without the helper."""
