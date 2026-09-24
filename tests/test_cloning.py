@@ -82,6 +82,20 @@ class CloningTests(unittest.TestCase):
         self.assertTrue(Path(saved.conditioning_path).exists())
         self.assertEqual(list(Path(self.clone.get_temp_dir()).iterdir()), [])
 
+    def test_saved_voice_can_be_deleted_from_the_user_voice_store(self):
+        store = importlib.import_module("clone_test_package._voice_store")
+        def model(paths, target, options):
+            Path(target).write_bytes(b"conditioning")
+        saved = self.clone.create_voice(self.paths, "Bad clone", "en", {}, model)
+        profile_dir = Path(saved.metadata_path).parent
+        self.assertTrue(profile_dir.is_dir())
+        removed_paths = store.remove_user_voice(saved.voice_id)
+        self.assertFalse(profile_dir.exists())
+        self.assertIn(str(profile_dir), removed_paths)
+        self.assertEqual(store.list_user_voice_records(), [])
+        with self.assertRaisesRegex(store.VoiceStoreError, "User voice not found"):
+            store.remove_user_voice(saved.voice_id)
+
     def test_failed_save_preserves_draft_and_overwrite_requires_explicit_choice(self):
         def model(paths, target, options):
             Path(target).write_bytes(b"first")

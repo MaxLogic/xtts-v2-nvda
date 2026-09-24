@@ -2,6 +2,7 @@
 
 ## 0.2.0
 
+- Clone Voice now has a Delete installed voice button for removing bad clones; the existing Installed Voices action uses the same clear deletion wording.
 - XTTS speaks about three times faster on an NVIDIA GPU: each decoding step replays as one CUDA graph instead of about 700 separate GPU calls. Uncached speech starts after about 0.26 s instead of 0.7 s and no longer stutters. It picks exactly the tokens Coqui's own decoding picks. Set `MAXLOGIC_XTTS_V2_CUDA_GRAPH=0` to turn it off; if the graph fails, XTTS falls back to Coqui's decoding by itself.
 - A voice says "Loading X T T S" when XTTS starts loading, "Still loading, please wait" every 10 seconds while it loads, and "X T T S is ready" when it can speak. Speech waits until the ready sound ends. The new Loading Sounds tab in the voice manager turns each sound off, replaces it with another WAV file, and sets how often the still loading sound repeats.
 - Selecting XTTS, or starting NVDA with it, no longer freezes NVDA while the model loads (35 to 60 s). Speech starts once the model is ready.

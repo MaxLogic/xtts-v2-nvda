@@ -206,6 +206,8 @@ Use **Sample text** (Alt+T) to enter your own text, then **Play sample** (Alt+P)
 
 Choose **Save voice** (Alt+S) when you want to keep the result. Enter a name, then confirm replacement if that voice already exists. Cancelling keeps your test clone available. Saving reuses the prepared conditioning. Closing the manager discards temporary test files; saved voices remain installed.
 
+Choose **Delete installed voice** (Alt+O) to remove a cloned or other user-installed voice. Select the voice and confirm the deletion. Packaged voices are not offered for deletion.
+
 Reference volume normalization is optional and off by default. **Show advanced settings** reveals:
 
 - **Maximum seconds per recording** (default 30): how much of each recording XTTS reads.

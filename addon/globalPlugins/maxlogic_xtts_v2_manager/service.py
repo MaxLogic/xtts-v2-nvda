@@ -75,6 +75,10 @@ _sample_text_cache = None
 _PREVIEW_WAV_CACHE_VERSION = 1
 _PREVIEW_WAV_CACHE_DIR_NAME = "preview-wav"
 
+
+class VoiceSwitcherDuplicateError(RuntimeError):
+	pass
+
 _PREVIEW_LANGUAGE_LABELS = {
 	"ar": _("Arabic"),
 	"cs": _("Czech"),
@@ -106,6 +110,55 @@ CACHE_MODE_OPTIONS = [
 
 def list_installed_user_voices():
 	return list_user_voice_records()
+
+
+def voice_switcher_is_available():
+	try:
+		addons = addonHandler.getAvailableAddons()
+	except Exception:
+		return False
+	return any(
+		getattr(addon, "name", None) == "maxlogicVoiceSwitcher"
+		and not any(getattr(addon, flag, False) for flag in (
+			"isPendingRemove", "isDisabled", "isBlocked", "isPendingInstall"
+		))
+		for addon in addons
+	)
+
+
+def add_voice_to_switcher(voice_id, display_name, replace=False):
+	if not voice_switcher_is_available():
+		raise RuntimeError(_("MaxLogic Voice Switcher is not available."))
+	from globalPlugins import maxlogicVoiceSwitcher
+	try:
+		preset = maxlogicVoiceSwitcher.save_voice_preset(
+			name=display_name,
+			synth="maxlogic_xtts_v2",
+			settings={"voice": voice_id},
+			voice_name=display_name,
+			replace=replace,
+		)
+	except maxlogicVoiceSwitcher.DuplicatePresetNameError as error:
+		raise VoiceSwitcherDuplicateError(str(error)) from error
+	return preset["name"]
+
+
+def set_current_voice(voice_id):
+	synth = synthDriverHandler.getSynth()
+	if synth is None or getattr(synth, "name", None) != "maxlogic_xtts_v2":
+		if not synthDriverHandler.setSynth("maxlogic_xtts_v2"):
+			raise RuntimeError(_("MaxLogic XTTS v2 could not be started."))
+		synth = synthDriverHandler.getSynth()
+	if synth is None or getattr(synth, "name", None) != "maxlogic_xtts_v2":
+		raise RuntimeError(_("MaxLogic XTTS v2 is not the active synthesizer."))
+	if voice_id not in (getattr(synth, "availableVoices", {}) or {}) and hasattr(synth, "reloadVoiceStore"):
+		synth.reloadVoiceStore(reason="manager-select", preferred_voice=voice_id)
+	if (getattr(synth, "availableVoices", {}) or {}) and voice_id not in synth.availableVoices:
+		raise RuntimeError(_("The selected voice is not available to the synthesizer."))
+	synth.voice = voice_id
+	if hasattr(synth, "saveSettings"):
+		synth.saveSettings()
+	return voice_id
 
 
 def _package_root():

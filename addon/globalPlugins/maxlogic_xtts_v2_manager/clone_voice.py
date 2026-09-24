@@ -107,9 +107,10 @@ class CloneVoicePanel(wx.Panel):
 		self.preview_button.Disable()
 		self.save_button = wx.Button(self, label=_("&Save voice..."))
 		self.save_button.Disable()
+		self.delete_button = wx.Button(self, label=_("Delete installed v&oice..."))
 		for button in (self.check_button, self.help_button):
 			row_reference.Add(button, 0, wx.ALL, 5)
-		for buttons in ((self.create_button, self.preview_button, self.save_button),):
+		for buttons in ((self.create_button, self.preview_button, self.save_button, self.delete_button),):
 			row = wx.BoxSizer(wx.HORIZONTAL)
 			for button in buttons:
 				row.Add(button, 0, wx.ALL, 5)
@@ -119,6 +120,7 @@ class CloneVoicePanel(wx.Panel):
 		sizer.Add(self.status, 0, wx.EXPAND | wx.ALL, 5)
 		self.SetSizer(sizer)
 		self.save_button.Bind(wx.EVT_BUTTON, self.on_save)
+		self.delete_button.Bind(wx.EVT_BUTTON, self.on_delete_installed)
 		self.reset_text_button.Bind(wx.EVT_BUTTON, self.on_reset_text)
 		self.language.Bind(wx.EVT_CHOICE, self.on_language)
 		self.add_button.Bind(wx.EVT_BUTTON, self.on_add)
@@ -443,6 +445,64 @@ class CloneVoicePanel(wx.Panel):
 		else:
 			self.say(_("Saved {name} to Installed voices.").format(name=record.display_name))
 		self.save_button.SetFocus()
+
+	def on_delete_installed(self, event):
+		try:
+			records = run_busy(
+				self,
+				_("Loading installed voices..."),
+				service.list_installed_user_voices,
+				button=self.delete_button,
+				completion_message="",
+			)
+		except Exception as error:
+			log.error("MaxLogic XTTS v2 loading installed voices for deletion failed: %s", error, exc_info=True)
+			self.say(_("Could not load installed voices: {error}").format(error=error))
+			self.delete_button.SetFocus()
+			return
+		if not records:
+			self.say(_("There are no user-installed voices to delete."))
+			self.delete_button.SetFocus()
+			return
+		labels = [record.display_name for record in records]
+		with wx.SingleChoiceDialog(
+			self,
+			_("Choose the user-installed voice to delete:"),
+			_("Delete installed voice"),
+			labels,
+		) as dialog:
+			if dialog.ShowModal() != wx.ID_OK:
+				self.delete_button.SetFocus()
+				return
+			record = records[dialog.GetSelection()]
+		answer = wx.MessageBox(
+			_("Delete {name}? Its installed voice files will be permanently removed.").format(name=record.display_name),
+			_("Delete installed voice?"),
+			wx.YES_NO | wx.NO_DEFAULT | wx.ICON_WARNING,
+			self,
+		)
+		if answer != wx.YES:
+			self.delete_button.SetFocus()
+			return
+		try:
+			result = run_busy(
+				self,
+				_("Deleting installed voice..."),
+				lambda: service.remove_local_voice(record.voice_id),
+				button=self.delete_button,
+				completion_message="",
+			)
+		except Exception as error:
+			log.error("MaxLogic XTTS v2 deleting an installed voice failed: %s", error, exc_info=True)
+			self.say(_("Could not delete voice: {error}").format(error=error))
+			self.delete_button.SetFocus()
+			return
+		self.on_change()
+		if result["refresh"].get("restartRequired"):
+			self.say(_("Deleted {name}. Restart NVDA to refresh the current synthesizer.").format(name=record.display_name))
+		else:
+			self.say(_("Deleted {name}.").format(name=record.display_name))
+		self.delete_button.SetFocus()
 
 	def on_preview(self, event):
 		if self.playing:

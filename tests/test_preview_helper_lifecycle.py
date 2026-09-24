@@ -106,6 +106,18 @@ class PreviewHelperLifecycleTests(unittest.TestCase):
         self.service.prepare_preview_runtime_async()
         self.assertFalse(self.helper.closed.wait(0.5), "the helper was closed under a reopened manager")
 
+    def test_voice_switcher_requires_the_exact_addon_to_be_usable(self):
+        addon = types.SimpleNamespace(name="maxlogicVoiceSwitcher")
+        with patch.object(self.service.addonHandler, "getAvailableAddons", lambda: [addon], create=True):
+            self.assertTrue(self.service.voice_switcher_is_available())
+            for flag in ("isPendingRemove", "isDisabled", "isBlocked", "isPendingInstall"):
+                with self.subTest(flag=flag), patch.object(addon, flag, True, create=True):
+                    self.assertFalse(self.service.voice_switcher_is_available())
+                    with self.assertRaisesRegex(RuntimeError, "not available"):
+                        self.service.add_voice_to_switcher("test", "Test voice")
+            addon.name = "anotherVoiceSwitcher"
+            self.assertFalse(self.service.voice_switcher_is_available())
+
 
 if __name__ == "__main__":
     unittest.main()

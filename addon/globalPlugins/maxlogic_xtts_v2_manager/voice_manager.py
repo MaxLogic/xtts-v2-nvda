@@ -193,13 +193,20 @@ class InstalledVoicesPanel(wx.Panel):
 		sizer.Add(preview_row, 0, wx.LEFT | wx.RIGHT, 0)
 		button_row = wx.WrapSizer(wx.HORIZONTAL)
 		self.install_button = wx.Button(self, label=_("&Install from file..."))
-		self.remove_button = wx.Button(self, label=_("&Remove selected voice"))
+		self.remove_button = wx.Button(self, label=_("&Delete selected voice"))
 		self.preview_button = wx.Button(self, label=_("&Play sample (Ctrl+P)"))
+		self.current_button = wx.Button(self, label=_("Set as &current voice"))
+		self.switcher_button = None
+		if service.voice_switcher_is_available():
+			self.switcher_button = wx.Button(self, label=_("Add to MaxLogic Voice S&witcher"))
 		self.folder_button = wx.Button(self, label=_("&Open voice folder"))
 		self.refresh_button = wx.Button(self, label=_("Re&fresh profiles"))
 		button_row.Add(self.install_button, 0, wx.ALL, 5)
 		button_row.Add(self.remove_button, 0, wx.ALL, 5)
 		button_row.Add(self.preview_button, 0, wx.ALL, 5)
+		button_row.Add(self.current_button, 0, wx.ALL, 5)
+		if self.switcher_button is not None:
+			button_row.Add(self.switcher_button, 0, wx.ALL, 5)
 		button_row.Add(self.folder_button, 0, wx.ALL, 5)
 		button_row.Add(self.refresh_button, 0, wx.ALL, 5)
 		sizer.Add(button_row, 0, wx.ALL, 0)
@@ -207,6 +214,9 @@ class InstalledVoicesPanel(wx.Panel):
 		self.Bind(wx.EVT_BUTTON, self.on_install, self.install_button)
 		self.Bind(wx.EVT_BUTTON, self.on_remove, self.remove_button)
 		self.Bind(wx.EVT_BUTTON, self.on_play_sample, self.preview_button)
+		self.Bind(wx.EVT_BUTTON, self.on_set_current, self.current_button)
+		if self.switcher_button is not None:
+			self.Bind(wx.EVT_BUTTON, self.on_add_to_switcher, self.switcher_button)
 		self.Bind(wx.EVT_BUTTON, self.on_open_voice_folder, self.folder_button)
 		self.Bind(wx.EVT_BUTTON, lambda evt: self.refresh_entries(), self.refresh_button)
 		self.Bind(wx.EVT_BUTTON, self.on_setup_runtime, self.setup_button)
@@ -215,10 +225,17 @@ class InstalledVoicesPanel(wx.Panel):
 		self.refresh_entries()
 
 	def _update_preview_button_state(self, is_loading=False):
-		self.preview_button.SetLabel(_("Sto&p sample (Ctrl+P)") if self._preview_playing else _("&Play sample (Ctrl+P)"))
+		self.preview_button.SetLabel(_("Sto&p sample (Ctrl+P)") if self._preview_in_progress else _("&Play sample (Ctrl+P)"))
 		can_start = (not is_loading) and self._selected_record() is not None and not self._preview_in_progress
-		self.preview_button.Enable(self._preview_playing or can_start)
+		self.preview_button.Enable(self._preview_in_progress or can_start)
 		self.folder_button.Enable((not is_loading) and (not self._preview_in_progress) and self._selected_record() is not None)
+		selected = self._selected_record()
+		self.current_button.Enable((not is_loading) and (not self._preview_in_progress) and selected is not None)
+		if self.switcher_button is not None:
+			self.switcher_button.Enable((not is_loading) and (not self._preview_in_progress) and selected is not None)
+		self.remove_button.Enable(
+			(not is_loading) and (not self._preview_in_progress) and selected is not None and selected.source == "user"
+		)
 
 	def _update_preview_lock_state(self, is_loading=False):
 		locked = self._preview_in_progress or is_loading
@@ -227,7 +244,11 @@ class InstalledVoicesPanel(wx.Panel):
 		self.install_button.Enable(not locked)
 		self.refresh_button.Enable(not locked)
 		self.setup_button.Enable((not locked) and self._setup_busy is None)
-		self.remove_button.Enable((not locked) and bool(self._user_voices))
+		self.current_button.Enable(not locked and self._selected_record() is not None)
+		if self.switcher_button is not None:
+			self.switcher_button.Enable(not locked and self._selected_record() is not None)
+		if locked:
+			self.remove_button.Disable()
 
 	def _set_loading_state(self, is_loading, message=None):
 		report_loading(self, is_loading, message)
@@ -248,17 +269,19 @@ class InstalledVoicesPanel(wx.Panel):
 			restore_focus(self, self.voice_list if self._user_voices else self.install_button)
 
 	def _apply_inventory(self, inventory, setup_status):
+		selected = self._selected_record()
+		selected_key = (selected.source, selected.voice_id) if selected is not None else None
 		self._user_voices = inventory["user"]
 		self._builtin_voices = inventory["builtin"]
 		self.voice_list.SetItems([_format_voice_source(record) for record in self._user_voices])
 		self.builtin_list.SetItems([_format_voice_source(record) for record in self._builtin_voices])
-		self.remove_button.Enable(bool(self._user_voices))
 		self.empty_user_hint.SetLabel(_("No user-installed profiles yet. Packaged profiles remain available below."))
 		self.empty_user_hint.Show(not self._user_voices)
 		self.setup_status.SetLabel(setup_status["message"])
-		if self._selected_record() is None:
-			self.voice_list.SetSelection(wx.NOT_FOUND)
-			self.builtin_list.SetSelection(wx.NOT_FOUND)
+		for control, records in ((self.voice_list, self._user_voices), (self.builtin_list, self._builtin_voices)):
+			index = next((index for index, record in enumerate(records)
+				if (record.source, record.voice_id) == selected_key), wx.NOT_FOUND)
+			control.SetSelection(index)
 		self._set_loading_state(False)
 		self.Layout()
 
@@ -379,24 +402,25 @@ class InstalledVoicesPanel(wx.Panel):
 		if not source_path:
 			return
 		try:
-			result = self._run_busy(
-				_("Installing local voice..."),
-				lambda: service.install_local_voice(source_path, overwrite=False),
-				button=self.install_button,
-			)
-		except service.DuplicateVoiceError:
-			overwrite = gui.messageBox(
-				_("This voice is already installed. Do you want to overwrite the user-managed copy?"),
-				_("Voice already installed"),
-				wx.YES_NO | wx.NO_DEFAULT | wx.ICON_WARNING,
-			)
-			if overwrite != wx.YES:
-				return
-			result = self._run_busy(
-				_("Overwriting local voice..."),
-				lambda: service.install_local_voice(source_path, overwrite=True),
-				button=self.install_button,
-			)
+			try:
+				result = self._run_busy(
+					_("Installing local voice..."),
+					lambda: service.install_local_voice(source_path, overwrite=False),
+					button=self.install_button,
+				)
+			except service.DuplicateVoiceError:
+				overwrite = gui.messageBox(
+					_("This voice is already installed. Do you want to overwrite the user-managed copy?"),
+					_("Voice already installed"),
+					wx.YES_NO | wx.NO_DEFAULT | wx.ICON_WARNING,
+				)
+				if overwrite != wx.YES:
+					return
+				result = self._run_busy(
+					_("Overwriting local voice..."),
+					lambda: service.install_local_voice(source_path, overwrite=True),
+					button=self.install_button,
+				)
 		except Exception as error:
 			log.exception("MaxLogic XTTS v2 local install failed", exc_info=True)
 			gui.messageBox(
@@ -414,29 +438,29 @@ class InstalledVoicesPanel(wx.Panel):
 		if record is None or record.source != "user":
 			return
 		response = gui.messageBox(
-			_("Do you want to remove this user-installed voice?\nVoice: {voice}").format(voice=record.display_name),
-			_("Remove voice?"),
+			_("Delete this user-installed voice and its files?\nVoice: {voice}").format(voice=record.display_name),
+			_("Delete voice?"),
 			wx.YES_NO | wx.NO_DEFAULT | wx.ICON_WARNING,
 		)
 		if response != wx.YES:
 			return
 		try:
 			result = self._run_busy(
-				_("Removing local voice..."),
+				_("Deleting local voice..."),
 				lambda: service.remove_local_voice(record.voice_id),
 				button=self.remove_button,
 			)
 		except Exception as error:
-			log.exception("MaxLogic XTTS v2 local remove failed", exc_info=True)
+			log.exception("MaxLogic XTTS v2 local delete failed", exc_info=True)
 			gui.messageBox(
-				_("Voice removal failed.\nSee NVDA's log for details.\n{error}").format(error=error),
-				_("Voice removal failed"),
+				_("Voice deletion failed.\nSee NVDA's log for details.\n{error}").format(error=error),
+				_("Voice deletion failed"),
 				wx.OK | wx.ICON_ERROR,
 			)
 			return
 		self.refresh_entries()
 		self._on_change()
-		self._report_voice_change(_("Voice removed."), result["refresh"])
+		self._report_voice_change(_("Voice deleted."), result["refresh"])
 
 	def _report_voice_change(self, message, refresh):
 		# Success needs no dialog to dismiss. A required restart does, because the voice list is stale until then.
@@ -444,6 +468,38 @@ class InstalledVoicesPanel(wx.Panel):
 			gui.messageBox(message + "\n" + _("Restart NVDA to refresh the current synth."), message, wx.OK | wx.ICON_INFORMATION)
 			return
 		ui.message(message)
+
+	def on_set_current(self, event):
+		record = self._selected_record()
+		if record is None:
+			return
+		try:
+			service.set_current_voice(record.voice_id)
+		except Exception as error:
+			gui.messageBox(_("The voice could not be selected.\n{error}").format(error=error), _("Could not select voice"), wx.OK | wx.ICON_ERROR)
+			return
+		self.setup_status.SetLabel(_("{name} is now the current NVDA voice.").format(name=record.display_name))
+		ui.message(self.setup_status.GetLabel())
+
+	def on_add_to_switcher(self, event):
+		record = self._selected_record()
+		if record is None:
+			return
+		try:
+			try:
+				name = service.add_voice_to_switcher(record.voice_id, record.display_name)
+			except service.VoiceSwitcherDuplicateError:
+				response = gui.messageBox(
+					_("A Voice Switcher preset named {name} already exists. Replace it?").format(name=record.display_name),
+					_("Replace voice preset?"), wx.YES_NO | wx.NO_DEFAULT | wx.ICON_QUESTION,
+				)
+				if response != wx.YES:
+					return
+				name = service.add_voice_to_switcher(record.voice_id, record.display_name, replace=True)
+		except Exception as error:
+			gui.messageBox(_("The voice could not be added to MaxLogic Voice Switcher.\n{error}").format(error=error), _("Could not add voice"), wx.OK | wx.ICON_ERROR)
+			return
+		ui.message(_("Added {name} to MaxLogic Voice Switcher.").format(name=name))
 
 	def on_open_voice_folder(self, event):
 		record = self._selected_record()
@@ -464,9 +520,10 @@ class InstalledVoicesPanel(wx.Panel):
 
 
 	def on_play_sample(self, event):
-		if self._preview_playing:
+		if self._preview_in_progress:
 			self._preview_request_id += 1
 			service.stop_preview()
+			ui.message(_("Sample stopped."))
 			if getattr(self, "_preview_spinner", None):
 				self._preview_spinner.stop()
 			self._preview_in_progress = False
@@ -653,9 +710,9 @@ class CatalogVoicesPanel(wx.Panel):
 
 	def _update_preview_button_state(self):
 		focused_entry = self._focused_entry()
-		self.preview_button.SetLabel(_("Sto&p sample") if self._preview_playing else _("&Play sample"))
+		self.preview_button.SetLabel(_("Sto&p sample") if self._preview_in_progress else _("&Play sample"))
 		can_start = focused_entry is not None and focused_entry.get("availableOnline", True) and not self._preview_in_progress
-		self.preview_button.Enable(self._preview_playing or can_start)
+		self.preview_button.Enable(self._preview_in_progress or can_start)
 
 	def _update_preview_lock_state(self):
 		locked = self._preview_in_progress
@@ -884,9 +941,10 @@ class CatalogVoicesPanel(wx.Panel):
 		return service.install_catalog_voice(entry, overwrite=overwrite, refresh=False)
 
 	def on_play_sample(self, event):
-		if self._preview_playing:
+		if self._preview_in_progress:
 			self._preview_request_id += 1
 			service.stop_preview()
+			ui.message(_("Sample stopped."))
 			if getattr(self, "_preview_spinner", None):
 				self._preview_spinner.stop()
 			self._preview_in_progress = False
@@ -1151,9 +1209,9 @@ class HuggingFaceSearchPanel(wx.Panel):
 
 	def _update_preview_button_state(self):
 		focused_entry = self._focused_entry()
-		self.preview_button.SetLabel(_("Sto&p sample") if self._preview_playing else _("&Play sample"))
+		self.preview_button.SetLabel(_("Sto&p sample") if self._preview_in_progress else _("&Play sample"))
 		can_start = focused_entry is not None and not self._preview_in_progress
-		self.preview_button.Enable(self._preview_playing or can_start)
+		self.preview_button.Enable(self._preview_in_progress or can_start)
 
 	def _update_preview_lock_state(self):
 		locked = self._preview_in_progress
@@ -1399,9 +1457,10 @@ class HuggingFaceSearchPanel(wx.Panel):
 		return service.install_huggingface_voice(entry, overwrite=overwrite, refresh=False)
 
 	def on_play_sample(self, event):
-		if self._preview_playing:
+		if self._preview_in_progress:
 			self._preview_request_id += 1
 			service.stop_preview()
+			ui.message(_("Sample stopped."))
 			if getattr(self, "_preview_spinner", None):
 				self._preview_spinner.stop()
 			self._preview_in_progress = False
